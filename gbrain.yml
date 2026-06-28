@@ -12,7 +12,19 @@ storage:
   # Directories persisted via the brain database only — bulk machine-generated
   # content. .gitignored automatically by `gbrain sync`. Restorable from the DB
   # via `gbrain export --restore-only`.
+  #
+  # 设计原则：人可能翻阅/引用的 → 落盘；纯机器中间产物/临时保障 → DB only
   db_only:
+    # ── GBrain 内部系统（人不需要看） ──
+    - meta/
+    - collision-takes/
+    # ── 临时保障快照（人不会翻） ──
+    - 运行/安全网/
+    # ── 旧版 slug，已废弃 ──
+    - qijuzhu/
+    - shilu/
+    - compress-safety/
+    # ── 外部媒体（GBrain 默认配置） ──
     - media/x/
     - media/articles/
     - meetings/transcripts/
