@@ -296,6 +296,34 @@ export function parseJudgeOutput(raw: string): JudgeVerdict | null {
  * retrieval lands in v0.37+ via hybrid search over pages newer than the
  * take's since_date. Documented limitation per CDX-8 + D17.
  */
+/**
+ * ICN patch: brain search-based evidence retriever. Searches the brain for
+ * relevant pages using keyword search against the take's claim text.
+ */
+export async function searchEvidence(
+  engine: BrainEngine,
+  take: Take,
+  _scope: ScopedReadOpts,
+): Promise<string> {
+  try {
+    const results = await engine.searchKeyword(take.claim, { limit: 5 });
+    if (!results || results.length === 0) {
+      return `[no relevant pages found for this take]
+Take claim: ${take.claim}
+`;
+    }
+    const snippets = results
+      .map((r, i) => `[source ${i + 1}] ${r.slug ?? 'unknown'} (score: ${r.score?.toFixed(3) ?? 'N/A'})\n${(r.content ?? '').slice(0, 600)}`)
+      .join('\n\n---\n\n');
+    return `Evidence from brain search:\n\n${snippets}\n\nTake claim being evaluated: ${take.claim}`;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return `[evidence retrieval failed: ${msg}]
+Take claim: ${take.claim}
+`;
+  }
+}
+
 export async function defaultEvidenceRetriever(take: Take, _scope: ScopedReadOpts): Promise<string> {
   return `[evidence retrieval not yet wired — v0.36.1.0 ship-state]
 Take claim text (the only "evidence" available pre-T-retrieval-impl):
@@ -384,18 +412,21 @@ class GradeTakesPhase extends BaseCyclePhase {
   protected async process(
     engine: BrainEngine,
     scope: ScopedReadOpts,
-    _ctx: OperationContext,
+    ctx: OperationContext,
     opts: GradeTakesOpts,
   ): Promise<{ summary: string; details: Record<string, unknown>; status?: PhaseStatus }> {
     const judge = opts.judge ?? defaultJudge;
-    const evidenceRetriever = opts.evidenceRetriever ?? defaultEvidenceRetriever;
+    // ICN patch: use brain search for evidence instead of the stub placeholder
+    const evidenceRetriever = opts.evidenceRetriever ?? ((take: Take, _scope: ScopedReadOpts) => searchEvidence(engine, take, _scope));
     const promptVersion = opts.promptVersion ?? GRADE_TAKES_PROMPT_VERSION;
-    const minAgeMonths = opts.minAgeMonths ?? 6;
+    const minAgeMonths = opts.minAgeMonths ?? 0; // ICN: 0 — our takes are observations, not predictions
     const takeLimit = opts.takeLimit ?? 50;
     const autoResolve = opts.autoResolve ?? false; // D17 default OFF
     const autoResolveThreshold = opts.autoResolveThreshold ?? 0.95; // D12 conservative
     const resolvedByLabel = opts.resolvedByLabel ?? 'gbrain:grade_takes';
-    const judgeModelId = opts.model ?? 'claude-sonnet-4-6';
+    // Read model from config with fallback chain: opts -> chat_model -> default
+    const modelFromCfg = (ctx.config as unknown as Record<string, unknown>)?.['chat_model'] as string | undefined;
+    const judgeModelId = opts.model ?? modelFromCfg ?? 'claude-sonnet-4-6';
 
     const useEnsemble = opts.useEnsemble ?? false;
     const ensembleThreshold = opts.ensembleThreshold ?? 0.85;

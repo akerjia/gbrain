@@ -94,37 +94,34 @@ export const EMPTY_EXTRACTION_TOMBSTONE_TEXT = '(no gradeable claims)';
  * fixtures before bumping PROPOSE_TAKES_PROMPT_VERSION; the train-holdout
  * gap should stay < 0.10 (overfitting threshold).
  */
-export const EXTRACT_TAKES_PROMPT = `Extract gradeable claims from the prose below.
+export const EXTRACT_TAKES_PROMPT = `从下方技术文档中提取关键洞察。
 
-A "gradeable claim" is a prediction, recommendation, or interpretive judgment
-that could turn out wrong over time. Examples:
-- "X company will hit ARR milestone by Q3" (prediction)
-- "Y founder is going to struggle with execution" (judgment)
-- "Z market will compress in 18 months" (prediction)
-- "I bet alice wins the round" (bet)
+洞察类型（由 domain 标注）：
+- 架构决策：已做出的架构选择及其取舍理由（为什么选A不选B，权衡了什么）
+- 设计张力：两种约束之间的矛盾（如安全 vs 便利，性能 vs 简洁）
+- 脆弱性：已识别的系统风险、隐患、单点故障、设计缺陷
+- 演化方向：系统未来演进方向、待解决的问题、改进建议
+- 行为模式：系统运行中观察到的规律、特征、经验教训
 
-NOT gradeable (do NOT extract these):
-- Pure facts ("X was founded in 2020")
-- Direct quotes from others without endorsement
-- Restatements of an earlier claim in the same page
+每个洞察输出 JSON 对象：
+- claim_text   (string, <=200 chars, 用中文概括，保留关键术语)
+- kind         (固定为 'take')
+- holder       (固定为 'brain')
+- weight       (number 0..1: 0.8-1.0=确信/已实践, 0.5-0.7=有依据/正在演化, 0.2-0.4=猜测/待验证)
+- domain       ('架构决策' | '设计张力' | '脆弱性' | '演化方向' | '行为模式')
 
-For each gradeable claim, output a JSON object with:
-- claim_text   (string, <=200 chars, paraphrase or near-verbatim from prose)
-- kind         ('prediction' | 'judgment' | 'bet')
-- holder       ('world' | 'people/<slug>' | 'companies/<slug>' | 'brain' — default 'brain' when author asserts the claim)
-- weight       (number 0..1 inferred from hedging language: 'I bet'/'strong conviction'=0.7-0.85,
-                'I think'/'moderate conviction'=0.5-0.7, 'maybe'/'I'd guess'=0.3-0.5)
-- domain       (short tag — e.g. 'tactics', 'macro', 'hiring', 'geography', 'pricing')
+不提取的内容：
+- 纯事实陈述（"系统运行在东京VM上"）
+- 操作步骤说明（"输入xxx命令"）
+- 与己捕获重复的观点
 
-Output ONLY a JSON array of these objects. No prose. No commentary. If no
-gradeable claims, return [].
+输出 ONLY JSON 数组。无其他文字。无洞察时返回 []。
 
 EXISTING FENCE ROWS (already captured — do NOT propose duplicates):
 {EXISTING_TAKES_JSON}
 
 PAGE PROSE:
-{PAGE_BODY}
-`;
+{PAGE_BODY}`;
 
 /** One proposed take, as the extractor produces it. */
 export interface ProposedTake {
@@ -434,7 +431,9 @@ class ProposeTakesPhase extends BaseCyclePhase {
   ): Promise<{ summary: string; details: Record<string, unknown>; status?: PhaseStatus }> {
     const extractor = opts.extractor ?? defaultExtractor;
     const promptVersion = opts.promptVersion ?? PROPOSE_TAKES_PROMPT_VERSION;
-    const pageLimit = opts.pageLimit ?? 100;
+    // ICN: read page limit from config (cycle.propose_takes.page_limit)
+    const configPageLimit = (_ctx.config as unknown as Record<string, unknown>)?.['cycle.propose_takes.page_limit'];
+    const pageLimit = typeof configPageLimit === 'number' ? configPageLimit : (opts.pageLimit ?? 100);
     const skipPagesWithFence = opts.skipPagesWithFence ?? false;
     const deadlineMs = opts.deadlineMs ?? ProposeTakesPhase.PHASE_DEADLINE_MS;
     const phaseStartMs = Date.now();
@@ -560,15 +559,16 @@ class ProposeTakesPhase extends BaseCyclePhase {
       for (const p of proposals) {
         const inserted = await engine.executeRaw<{ id: number }>(
           `INSERT INTO take_proposals
-             (source_id, page_slug, content_hash, prompt_version, proposal_run_id,
+             (source_id, page_slug, content_hash, claim_hash, prompt_version, proposal_run_id,
               claim_text, kind, holder, weight, domain, dedup_against_fence_rows, model_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
            ON CONFLICT (source_id, page_slug, content_hash, prompt_version, md5(claim_text)) DO NOTHING
            RETURNING id`,
           [
             sourceId,
             page.slug,
             ch,
+            claimHash,
             promptVersion,
             proposalRunId,
             p.claim_text,
