@@ -37,7 +37,7 @@ jobs:
   # the deny-listed doc files.
   # ──────────────────────────────────────────────────────────────────────
   cache-check:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, tokyo]
     timeout-minutes: 10
     outputs:
       hit: ${{ steps.lookup.outputs.cache-hit }}
@@ -81,7 +81,7 @@ jobs:
   gitleaks:
     needs: cache-check
     if: needs.cache-check.outputs.hit != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, tokyo]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -100,7 +100,7 @@ jobs:
     # the 20 checks via & + wait (~5s vs ~15-25s sequential).
     needs: cache-check
     if: needs.cache-check.outputs.hit != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, tokyo]
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -121,7 +121,7 @@ jobs:
     # shard 1's overload).
     needs: cache-check
     if: needs.cache-check.outputs.hit != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, tokyo]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -146,7 +146,7 @@ jobs:
     # the matrix because it's light (~42s).
     needs: cache-check
     if: needs.cache-check.outputs.hit != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, tokyo]
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -169,7 +169,7 @@ jobs:
     # dominate a shard's wallclock. Runs in parallel with the matrix.
     needs: cache-check
     if: needs.cache-check.outputs.hit != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, tokyo]
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -205,7 +205,7 @@ jobs:
     # weights fall back to corpus median — new test files work immediately.
     needs: cache-check
     if: needs.cache-check.outputs.hit != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, tokyo]
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -235,7 +235,7 @@ jobs:
   cache-write:
     needs: [cache-check, gitleaks, verify, serial-tests, slow-eval-longmemeval, slow-entity-resolve-perf, test]
     if: success() && needs.cache-check.outputs.hit != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, tokyo]
     timeout-minutes: 5
     steps:
       - name: Create cache marker
@@ -258,7 +258,7 @@ jobs:
   test-status:
     needs: [cache-check, gitleaks, verify, serial-tests, slow-eval-longmemeval, slow-entity-resolve-perf, test]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, tokyo]
     timeout-minutes: 5
     steps:
       - name: Aggregate result

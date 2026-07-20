@@ -28,7 +28,7 @@ jobs:
     # Postgres and HARD-FAILS if DATABASE_URL is missing, so the guard can never
     # silently skip.
     name: JSONB parity (#2339 regression guard)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, tokyo]
     timeout-minutes: 15
     services:
       postgres:
@@ -65,7 +65,7 @@ jobs:
 
   tier1:
     name: Tier 1 (Mechanical)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, tokyo]
     timeout-minutes: 20
     services:
       postgres:
@@ -94,7 +94,7 @@ jobs:
 
   tier2:
     name: Tier 2 (LLM Skills)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, tokyo]
     # Runs on every push/PR now (promoted from schedule-only in v0.19.0).
     # Tier 1 must pass first; Tier 2 uses OPENAI_API_KEY + ANTHROPIC_API_KEY
     # from repo/org secrets. Nightly + manual triggers still supported via
