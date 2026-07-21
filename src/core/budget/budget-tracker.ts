@@ -32,7 +32,7 @@ import { mkdirSync, appendFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { gbrainPath } from '../config.ts';
 import { ANTHROPIC_PRICING, type ModelPricing } from '../anthropic-pricing.ts';
-import { canonicalLookup } from '../model-pricing.ts';
+import { canonicalLookup, CANONICAL_PRICING } from '../model-pricing.ts';
 import { EMBEDDING_PRICING, lookupEmbeddingPrice } from '../embedding-pricing.ts';
 import { splitProviderModelId } from '../model-id.ts';
 import { isoWeekFilename, resolveAuditDir } from '../audit-week-file.ts';
@@ -194,10 +194,18 @@ function lookupPricing(modelId: string, kind: BudgetKind): ModelPricing | null {
   // brainstorm/lsd.
   const bare = ANTHROPIC_PRICING[modelId];
   if (bare) return bare;
+  // v0.42.62.0: try canonical pricing directly (catches non-Anthropic models
+  // like deepseek:deepseek-v4-flash that exist in CANONICAL_PRICING but are
+  // filtered out of ANTHROPIC_PRICING).
+  const canonicalBare = CANONICAL_PRICING[modelId];
+  if (canonicalBare) return canonicalBare;
   const { provider: providerId, model: modelTail } = splitProviderModelId(modelId);
   if (modelTail) {
     const tailHit = ANTHROPIC_PRICING[modelTail];
     if (tailHit) return tailHit;
+    // v0.42.62.0: try canonical pricing for the bare model tail too.
+    const canonicalTailHit = CANONICAL_PRICING[modelTail];
+    if (canonicalTailHit) return canonicalTailHit;
   }
   // Paid rerank providers (e.g. ZeroEntropy's zerank-2) aren't Claude-priced,
   // so they miss the ANTHROPIC_PRICING checks above. Reuse the embedding
