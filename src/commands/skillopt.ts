@@ -359,6 +359,8 @@ export function parseFlags(args: string[]): ParsedFlags {
   let skillsDir: string | undefined;
   let help = false;
   let all = false;
+  let background = false;
+  let follow = false;
   let brainWideMaxCostUsd: number | undefined;
   let targetModelsFleet: string[] | undefined;
 
@@ -404,6 +406,8 @@ export function parseFlags(args: string[]): ParsedFlags {
     if (a === '--resume') { resumeRunId = args[++i]; i += 1; continue; }
     if (a === '--skills-dir') { skillsDir = args[++i]; i += 1; continue; }
     if (a === '--all') { all = true; i += 1; continue; }
+    if (a === '--background') { background = true; i += 1; continue; }
+    if (a === '--follow') { follow = true; i += 1; continue; }
     if (a === '--brain-wide-max-cost-usd') { brainWideMaxCostUsd = mustFloat(args[++i], '--brain-wide-max-cost-usd'); i += 1; continue; }
     if (a === '--target-models') {
       // F5: comma-separated list. Mutually exclusive with --target-model
