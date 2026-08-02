@@ -1455,6 +1455,36 @@ export class SyncLockBusyError extends Error {
 }
 
 export async function performSync(engine: BrainEngine, opts: SyncOpts): Promise<SyncResult> {
+  // v0.42.66.1 (icn/P004): resolve per-source strategy when the caller did
+  // not pass an explicit one. Pre-fix, ONLY the `sync --all` fan-out read
+  // `sources.config.strategy`; every other path (minion 'sync' job handler,
+  // autopilot inline cycle, bare single-source CLI) defaulted to markdown
+  // and silently dropped code files from the diff filter — then the
+  // "no syncable changes" branch advanced `last_commit` anyway, a permanent
+  // silent wedge for code-only sources (icn-scripts incident 2026-08-02:
+  // 65 scripts in git, 0 in the index, bookmark tracking HEAD). With this,
+  // `--strategy` still wins when given; the source config is the fallback.
+  if (opts.strategy === undefined && opts.sourceId) {
+    try {
+      const rows = await engine.executeRaw<{ config: unknown }>(
+        `SELECT config FROM sources WHERE id = $1`,
+        [opts.sourceId],
+      );
+      const rawCfg = rows[0]?.config;
+      let cfg: Record<string, unknown> | null = null;
+      if (typeof rawCfg === 'string') {
+        try {
+          const parsed: unknown = JSON.parse(rawCfg);
+          if (parsed && typeof parsed === 'object') cfg = parsed as Record<string, unknown>;
+        } catch { /* unparseable config — fall through */ }
+      } else if (rawCfg && typeof rawCfg === 'object') {
+        cfg = rawCfg as Record<string, unknown>;
+      }
+      const s = cfg?.strategy;
+      if (s === 'markdown' || s === 'code' || s === 'auto') opts.strategy = s;
+    } catch { /* best-effort: any failure leaves strategy undefined → legacy markdown */ }
+  }
+
   // v0.22.13 CODEX-2: cross-process writer lock prevents two concurrent
   // syncs from racing on the same last_commit anchor (last writer wins,
   // bookmark regresses, silent corruption).
