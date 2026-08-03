@@ -53,7 +53,7 @@ import type { PhaseStatus, CyclePhase } from '../cycle.ts';
  * verdicts in `take_proposals` (composite key includes prompt_version) stay
  * valid as audit history; new runs re-spend LLM tokens on every page.
  */
-export const PROPOSE_TAKES_PROMPT_VERSION = 'v0.36.1.0-tuned-cat15';
+export const PROPOSE_TAKES_PROMPT_VERSION = 'v2026-08-03-kind4';
 
 /**
  * Sentinel claim_text for the tombstone row written when a page extracts
@@ -105,10 +105,29 @@ export const EXTRACT_TAKES_PROMPT = `从下方技术文档中提取关键洞察�
 
 每个洞察输出 JSON 对象：
 - claim_text   (string, <=200 chars, 用中文概括，保留关键术语)
-- kind         (固定为 'take')
+- kind         ('fact' | 'take' | 'bet' | 'hunch'，按下方判定准则判断)
 - holder       (固定为 'brain')
 - weight       (number 0..1: 0.8-1.0=确信/已实践, 0.5-0.7=有依据/正在演化, 0.2-0.4=猜测/待验证)
 - domain       ('架构决策' | '设计张力' | '脆弱性' | '演化方向' | '行为模式')
+
+kind 判定（认识论问题，逐条问）：
+- fact   ：这条是可验证/已确认的事实吗？（注意：纯事实不提取，仅"可验证的行为模式观察"算）
+- take   ：这条是有立场、有依据的观点吗？（架构决策/设计张力/脆弱性/演化方向的主体）
+- bet    ：这条包含可验证的预测或时间承诺吗？（"X 会在 Y 前/后发生"）
+- hunch  ：这条是未成型的直觉或低置信推测吗？（weight 0.2-0.4 的语义）
+
+domain → kind 倾向：
+- 架构决策（已做的选择）          → take；若含"计划做 X"时间承诺 → bet
+- 设计张力（矛盾分析）            → take
+- 脆弱性（风险识别）              → take（有证据）| hunch（猜测）
+- 演化方向（建议/待办）           → take（建议）| bet（可验证时间承诺）
+- 行为模式（观察规律）            → take | fact（可验证观察）
+
+kind 与 weight 联动（先判 kind 再定 weight，两者自洽）：
+- fact 通常 0.8-1.0（已验证）
+- take 通常 0.5-0.9（有依据）
+- bet = 预测概率（0.4-0.8）
+- hunch 0.1-0.4（低置信）
 
 不提取的内容：
 - 纯事实陈述（"系统运行在东京VM上"）
@@ -201,6 +220,11 @@ async function listCandidatePages(
     params.push(scope.sourceId);
     where.push(`source_id = $${params.length}`);
   }
+  // ICN: 排除非知识页面——舱段配置、skill 文档不会产出有价值的提案
+  params.push('舱段/%');
+  where.push(`slug NOT LIKE $${params.length}`);
+  params.push('skills/%');
+  where.push(`slug NOT LIKE $${params.length}`);
   params.push(limit);
   return engine.executeRaw<ProposeTakesPageRow>(
     `SELECT slug, source_id, compiled_truth
@@ -557,6 +581,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
       // the per-page tuple (migration v125), so a multi-claim page keeps every
       // claim. RETURNING id prevents a repeated claim from inflating the count.
       for (const p of proposals) {
+        const claimHash = contentHash(p.claim_text);
         const inserted = await engine.executeRaw<{ id: number }>(
           `INSERT INTO take_proposals
              (source_id, page_slug, content_hash, claim_hash, prompt_version, proposal_run_id,
@@ -595,16 +620,18 @@ class ProposeTakesPhase extends BaseCyclePhase {
       // SUCCESSFUL empty extract — the extractor-throw path `continue`s above,
       // so failed pages are retried rather than tombstoned.
       if (proposals.length === 0) {
+        const tombstoneHash = contentHash(EMPTY_EXTRACTION_TOMBSTONE_TEXT);
         await engine.executeRaw(
           `INSERT INTO take_proposals
-             (source_id, page_slug, content_hash, prompt_version, proposal_run_id,
+             (source_id, page_slug, content_hash, claim_hash, prompt_version, proposal_run_id,
               claim_text, kind, holder, weight, domain, dedup_against_fence_rows, model_id, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'rejected')
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'rejected')
            ON CONFLICT (source_id, page_slug, content_hash, prompt_version, md5(claim_text)) DO NOTHING`,
           [
             sourceId,
             page.slug,
             ch,
+            tombstoneHash,
             promptVersion,
             proposalRunId,
             EMPTY_EXTRACTION_TOMBSTONE_TEXT,
