@@ -49,3 +49,14 @@ test/fixtures/pglite-snapshot.version
 
 # Private brain reports — never check these in (per CLAUDE.md privacy rule)
 reports/network-intelligence/
+
+# Auto-managed by gbrain (db_only directories)
+meta/
+collision-takes/
+运行/安全网/
+qijuzhu/
+shilu/
+compress-safety/
+media/x/
+media/articles/
+meetings/transcripts/
