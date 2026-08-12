@@ -557,6 +557,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
       // the per-page tuple (migration v125), so a multi-claim page keeps every
       // claim. RETURNING id prevents a repeated claim from inflating the count.
       for (const p of proposals) {
+        const claimHash = contentHash(p.claim_text);
         const inserted = await engine.executeRaw<{ id: number }>(
           `INSERT INTO take_proposals
              (source_id, page_slug, content_hash, claim_hash, prompt_version, proposal_run_id,
