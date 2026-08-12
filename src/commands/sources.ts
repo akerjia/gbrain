@@ -406,6 +406,19 @@ async function runRemove(engine: BrainEngine, args: string[]): Promise<void> {
     }
   }
 
+  // P010 (proposal #7060): 永久删除前自动备份 — 确认 gate 通过后仍可回滚。
+  // 有数据（impact.pageCount > 0）才备份；空 source 无数据可丢。
+  if (impact && impact.pageCount > 0) {
+    try {
+      const { backupSourceBeforeRemove } = await import('../core/destructive-guard.ts');
+      const backupDir = await backupSourceBeforeRemove(engine, id);
+      console.log(`[P010] source "${id}" 已自动备份到: ${backupDir}`);
+      console.log(`      恢复: 手动 SQL INSERT source.json / pages.json / chunks.json（保留 source_id）`);
+    } catch (e) {
+      console.error(`[P010] 自动备份失败（继续删除，但数据将不可回滚）: ${(e as Error).message}`);
+    }
+  }
+
   // v0.42.44 — tear down durability scaffolding BEFORE the row is deleted (we
   // need the path/label while it still exists). Best-effort; tolerates missing
   // repo/cron/credential independently.

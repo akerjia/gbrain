@@ -14,6 +14,10 @@
  */
 
 import type { BrainEngine } from './engine.ts';
+import { SOURCE_CONFIG_OBJECT_SQL } from './source-config-sql.ts';
+import { writeFileSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -190,7 +194,7 @@ export async function softDeleteSource(
      SET archived = true,
          archived_at = now(),
          archive_expires_at = ${expiresClause},
-         config = COALESCE(config, '{}'::jsonb) || '{"federated": false}'::jsonb
+         config = ${SOURCE_CONFIG_OBJECT_SQL} || '{"federated": false}'::jsonb
      WHERE id = $1 AND archived = false
      RETURNING id, name, archived_at, archive_expires_at`,
     [sourceId],
@@ -232,7 +236,7 @@ export async function restoreSource(
      SET archived = false,
          archived_at = NULL,
          archive_expires_at = NULL,
-         config = COALESCE(config, '{}'::jsonb) || $1::jsonb
+         config = ${SOURCE_CONFIG_OBJECT_SQL} || $1::text::jsonb
      WHERE id = $2 AND archived = true
      RETURNING id`,
     [federatedPatch, sourceId],
@@ -296,6 +300,54 @@ export async function purgeExpiredSources(
 }
 
 // ── Display Helpers ─────────────────────────────────────────
+
+/**
+ * P010 (proposal #7060): 永久删除 source 前自动备份全部数据到磁盘。
+ *
+ * 背景：即使有 impact preview + --confirm-destructive gate，一次确认后的
+ * 误操作仍会级联删除 pages/chunks/embeddings 且无回滚。本函数在 DELETE 前
+ * 把 source 行 + pages + content_chunks 全量导出为 JSON，写入：
+ *   ~/.gbrain/backups/source-remove/<sourceId>/<UTC-timestamp>/
+ * 恢复时可手动 SQL INSERT 回去（保留 source_id 即可重建级联关系）。
+ *
+ * 只读操作（SELECT），不修改任何数据；调用方在真正删除前调用。
+ *
+ * @returns 备份目录绝对路径
+ */
+export async function backupSourceBeforeRemove(
+  engine: BrainEngine,
+  sourceId: string,
+): Promise<string> {
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const dir = join(homedir(), '.gbrain', 'backups', 'source-remove', sourceId, ts);
+  mkdirSync(dir, { recursive: true });
+
+  // pglite 数值列可能返回 BigInt，JSON.stringify 会抛错 → replacer 转字符串
+  const replacer = (_k: string, v: unknown): unknown =>
+    typeof v === 'bigint' ? v.toString() : v;
+
+  const srcRows = await engine.executeRaw<Record<string, unknown>>(
+    `SELECT * FROM sources WHERE id = $1`,
+    [sourceId],
+  );
+  writeFileSync(join(dir, 'source.json'), JSON.stringify(srcRows, replacer, 2));
+
+  const pageRows = await engine.executeRaw<Record<string, unknown>>(
+    `SELECT * FROM pages WHERE source_id = $1`,
+    [sourceId],
+  );
+  writeFileSync(join(dir, 'pages.json'), JSON.stringify(pageRows, replacer, 2));
+
+  const chunkRows = await engine.executeRaw<Record<string, unknown>>(
+    `SELECT cc.* FROM content_chunks cc
+     JOIN pages p ON cc.page_id = p.id
+     WHERE p.source_id = $1`,
+    [sourceId],
+  );
+  writeFileSync(join(dir, 'chunks.json'), JSON.stringify(chunkRows, replacer, 2));
+
+  return dir;
+}
 
 /**
  * Format an impact assessment for terminal display.

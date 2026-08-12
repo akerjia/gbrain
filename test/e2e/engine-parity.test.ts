@@ -528,6 +528,38 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     }
   });
 
+  test('#2555 getChunks sourceIds[] parity: federated grant + scalar floor + unset default identical on both engines', async () => {
+    for (const eng of [pgEngine, pgliteEngine]) {
+      await eng.executeRaw(`INSERT INTO sources (id, name, local_path) VALUES ('gcp-beta', 'gcp-beta', '/tmp/gcp-beta') ON CONFLICT (id) DO NOTHING`);
+      await eng.putPage('wiki/gcp-doc', {
+        type: 'note', title: 'beta doc', compiled_truth: 'beta body', timeline: '',
+      }, { sourceId: 'gcp-beta' });
+      await eng.upsertChunks('wiki/gcp-doc', [
+        { chunk_index: 0, chunk_text: 'gcp beta chunk', chunk_source: 'compiled_truth' },
+      ], { sourceId: 'gcp-beta' });
+      await eng.putPage('wiki/gcp-doc', {
+        type: 'note', title: 'default decoy', compiled_truth: 'decoy body', timeline: '',
+      }, { sourceId: 'default' });
+      await eng.upsertChunks('wiki/gcp-doc', [
+        { chunk_index: 0, chunk_text: 'gcp default decoy', chunk_source: 'compiled_truth' },
+      ], { sourceId: 'default' });
+    }
+
+    for (const eng of [pgEngine, pgliteEngine]) {
+      // Federated array wins over scalar and reaches the non-default source.
+      const federated = await eng.getChunks('wiki/gcp-doc', { sourceId: 'default', sourceIds: ['gcp-beta'] });
+      expect(federated.map(c => c.chunk_text)).toEqual(['gcp beta chunk']);
+      // Out-of-grant array → empty, never a fall-through to 'default'.
+      const outOfGrant = await eng.getChunks('wiki/gcp-doc', { sourceIds: ['gcp-nonexistent'] });
+      expect(outOfGrant).toEqual([]);
+      // Unset opts keep the historical 'default' floor.
+      const unset = await eng.getChunks('wiki/gcp-doc');
+      expect(unset.map(c => c.chunk_text)).toEqual(['gcp default decoy']);
+      // #2544 trim keeps the Chunk shape (embedding deliberately unselected → null).
+      expect(federated[0].embedding).toBeNull();
+    }
+  });
+
   test('v114 (#1941) listLinkSources parity: same ordered provenance counts on both engines', async () => {
     const mk = async (eng: BrainEngine) => {
       for (const s of ['lsp-a', 'lsp-b', 'lsp-c']) {
@@ -855,23 +887,61 @@ describeBoth('Engine parity — federated sourceIds[] secondary reads (#2200)', 
     expect(pg).toEqual(['beta-tag']); // default decoy excluded
   });
 
+  function exactLinkShape(links: Awaited<ReturnType<BrainEngine['getLinks']>>): string[] {
+    return links.map(link => [
+      link.from_source_id,
+      link.from_slug,
+      link.to_source_id,
+      link.to_slug,
+      link.origin_source_id ?? null,
+      link.origin_slug ?? null,
+      link.link_type,
+    ].join('::')).sort();
+  }
+
   test('getLinks identical under sourceIds[] (all three endpoints scoped)', async () => {
-    const pg = (await pgEngine.getLinks('fed/doc', grant)).map(l => l.to_slug).sort();
-    const pglite = (await pgliteEngine.getLinks('fed/doc', grant)).map(l => l.to_slug).sort();
-    expect(pg).toEqual(pglite);
-    expect([...new Set(pg)]).toEqual(['fed/target']); // far-endpoint 'fed/outside' excluded
-    // F1: origin_slug nulled identically on both engines when origin is out-of-grant.
-    const pgOrigins = (await pgEngine.getLinks('fed/doc', grant)).map(l => l.origin_slug ?? null);
-    const pgliteOrigins = (await pgliteEngine.getLinks('fed/doc', grant)).map(l => l.origin_slug ?? null);
+    const pgLinks = await pgEngine.getLinks('fed/doc', grant);
+    const pgliteLinks = await pgliteEngine.getLinks('fed/doc', grant);
+    expect(exactLinkShape(pgLinks)).toEqual(exactLinkShape(pgliteLinks));
+    expect([...new Set(pgLinks.map(l => `${l.to_source_id}:${l.to_slug}`))])
+      .toEqual(['beta:fed/target']); // far-endpoint 'fed/outside' excluded
+    // F1: origin identity nulls identically when origin is out-of-grant.
+    const pgOrigins = pgLinks.map(l => [l.origin_source_id ?? null, l.origin_slug ?? null]);
+    const pgliteOrigins = pgliteLinks.map(l => [l.origin_source_id ?? null, l.origin_slug ?? null]);
     expect(pgOrigins.sort()).toEqual(pgliteOrigins.sort());
-    expect(pgOrigins).not.toContain('fed/outside');
+    expect(pgOrigins).not.toContainEqual(['default', 'fed/outside']);
+  });
+
+  test('scalar getLinks preserves cross-source destination identity across engines', async () => {
+    const scalar = { sourceId: 'beta' };
+    const pg = await pgEngine.getLinks('fed/doc', scalar);
+    const pglite = await pgliteEngine.getLinks('fed/doc', scalar);
+    expect(exactLinkShape(pg)).toEqual(exactLinkShape(pglite));
+    expect(pg).toContainEqual(expect.objectContaining({
+      from_source_id: 'beta',
+      from_slug: 'fed/doc',
+      to_source_id: 'default',
+      to_slug: 'fed/outside',
+    }));
+  });
+
+  test('unscoped link reads expose exact endpoint identity across engines', async () => {
+    const pgLinks = await pgEngine.getLinks('fed/doc');
+    const pgliteLinks = await pgliteEngine.getLinks('fed/doc');
+    expect(exactLinkShape(pgLinks)).toEqual(exactLinkShape(pgliteLinks));
+    expect(pgLinks.every(link => link.from_source_id && link.to_source_id)).toBe(true);
+
+    const pgBacklinks = await pgEngine.getBacklinks('fed/doc');
+    const pgliteBacklinks = await pgliteEngine.getBacklinks('fed/doc');
+    expect(exactLinkShape(pgBacklinks)).toEqual(exactLinkShape(pgliteBacklinks));
+    expect(pgBacklinks.every(link => link.from_source_id && link.to_source_id)).toBe(true);
   });
 
   test('getBacklinks identical under sourceIds[] (both endpoints scoped)', async () => {
-    const pg = (await pgEngine.getBacklinks('fed/doc', grant)).map(l => l.from_slug).sort();
-    const pglite = (await pgliteEngine.getBacklinks('fed/doc', grant)).map(l => l.from_slug).sort();
-    expect(pg).toEqual(pglite);
-    expect(pg).toEqual(['fed/target']);
+    const pg = await pgEngine.getBacklinks('fed/doc', grant);
+    const pglite = await pgliteEngine.getBacklinks('fed/doc', grant);
+    expect(exactLinkShape(pg)).toEqual(exactLinkShape(pglite));
+    expect(pg.map(l => `${l.from_source_id}:${l.from_slug}`)).toEqual(['beta:fed/target']);
   });
 
   test('getTimeline identical under sourceIds[]', async () => {

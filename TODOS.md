@@ -1,10 +1,166 @@
 # TODOS
 
+## Fix-wave 1 follow-ups (upgrade-wedge + trust-seam wave, 2026-08)
+
+Deferred from the un-wedge-v121 hotfix wave (eng review + codex outside voice
+CLEARED; every item an explicit review decision). Waves 2–6 of the sequence are
+planned separately (provider-compat rescue is next; its original 2026-07-24
+DeepSeek-deprecation deadline has now PASSED — re-verify each cluster against
+master before starting, several fixes landed independently).
+
+- [ ] **P2 — Shared strict `parseFlags` helper as the #2185 end-state (eng
+  review 2B).** This wave ships the generated known-flags registry +
+  pre-dispatch validator (parser and registry can drift only until the
+  freshness guard fires). The structural end-state migrates commands onto one
+  shared strict parser so parser == registry by construction; mechanical but
+  touches 60+ command files — its own PR. Where: `src/commands/*.ts`,
+  `src/cli.ts`, `scripts/generate-flag-registry.ts` (retires).
+- [ ] **P2 — `whoknows` CLI routing (surfaced by the #2035-class sweep).**
+  `handleCliOnly`'s `whoknows` case (the dedicated CLI renderer with
+  thin-client routing) is dead code — the command resolves via the
+  `find_experts` op alias, and adding it to CLI_ONLY trips the alias-collision
+  guard. Decide the intended surface alongside PR #2509 (whoknows --explain
+  per-result factor breakdown) and delete whichever lane loses. Where:
+  `src/cli.ts`, `src/commands/whoknows.ts`, PR #2509.
+- [ ] **P3 — #2544 second half: per-put_page `getAllSlugs` full scan.** The
+  getChunks egress half shipped in this wave (explicit non-vector column
+  list). The remaining Postgres-egress cost is put_page's per-call
+  `getAllSlugs` table scan — needs a targeted existence probe or cached slug
+  set. Where: `src/core/operations.ts` put_page path, both engines.
+- [ ] **P3 — #1558 admin-UI register form.** The `/admin/api/register-client`
+  API now accepts `source` + `federatedRead` (this wave, PR #2016 absorbed);
+  the admin SPA form fields + `/admin/api/sources` picker are the UI layer.
+  Where: `src/commands/serve-http.ts` admin SPA blob.
+- [ ] **P3 — jsonb-integrity surfaces: batch + share (ship-review follow-up).**
+  doctor's jsonbIntegrityCheck runs 2 queries per target (16 round-trips) and
+  duplicates the TARGETS table with repair-jsonb (already drifted once on the
+  jsonPayloadOnly predicate before being mirrored by hand). Batch the counts
+  into one UNION ALL query and extract a shared targets constant
+  (src/core/jsonb-integrity-targets.ts) consumed by both. Where:
+  `src/commands/doctor.ts` jsonbIntegrityCheck, `src/commands/repair-jsonb.ts`.
+- [ ] **P3 — register-client HTTP-level e2e (ship-review follow-up).** The
+  source/federatedRead lane is covered by unit normalizers + a structural
+  route pin; a DATABASE_URL-gated serve-http e2e (register with bindings →
+  assert stored client via /admin/api/agents; invalid source → 400
+  invalid_source) closes the wire-level gap. Where:
+  `test/e2e/serve-http-oauth.test.ts`.
+- [ ] **P3 — get_chunks `__all__` sentinel narrows to 'default' (red-team,
+  Wave 3 territory).** `sourceScopeOpts` returns `{}` for a trusted local
+  `--source __all__` caller (documented "spans the brain"), but both engines'
+  getChunks map empty scope to the 'default' floor — the one read op where
+  `{}` is reinterpreted. Fold into the Wave 3 source-federation cluster's
+  `__all__` work (an explicit unscoped signal in the engine signature, or
+  handler-side expansion for trusted callers). Where: `src/core/operations.ts`
+  get_chunks, both engines' getChunks.
+- [ ] **P3 — #2536 wedged-migration diagnostics.** The v121 wedge aborted
+  initSchema BEFORE runMigrations, so the wedged-migration diagnostics row was
+  never written — operators got a bare SQL error with no remediation hint.
+  Write the diagnostics row (or a stderr remediation block) from the blob-replay
+  catch path too. Where: `src/core/migrate.ts`, `src/commands/apply-migrations.ts`.
+## WAL-repair wave follow-ups (#223/#1670/#2575)
+
+- [ ] **P2 — gate auto-repair on an unclean-shutdown marker (adversarial F7).** The classifier
+  deliberately over-matches (`RuntimeError`/`unreachable` → `wasm-abort`). If an unclean
+  shutdown leaves a REPLAYABLE WAL tail (normal crash recovery would restore those committed
+  txns) and the reopen then fails on a transient WASM error (OOM), auto-repair fires, layout
+  validation can't tell torn from replayable, and resetWal discards the tail while the notice
+  says "data preserved." Bounded today (backup always taken + restore + honest failure + repeated
+  attempts capped), but a false-positive-with-successful-retry silently drops committed data.
+  Fix direction (probe-verified): PGLite removes `postmaster.pid` on clean close, so gate AUTO
+  repair (not the manual command) on `postmaster.pid` presence — a clean dir that aborts is not
+  torn-WAL. Requires making the serial regression test stamp a `postmaster.pid` before corrupting
+  (it currently clean-disconnects then corrupts, which the red-team flagged as unfaithful anyway).
+  Needs a recall/precision call before landing.
+- [ ] **P3 — live non-gbrain PGLite consumer not caught by the postmaster.pid liveness guard
+  (adversarial F8).** PGLite writes a sentinel `postmaster.pid` of `-42`; the liveness refusal in
+  `validateWalRepairTarget` requires `pid > 0`, so it protects native Postgres dirs but not a
+  non-gbrain pglite app that has the dir open (such an app writes no `.gbrain-lock`). Deliberate
+  misuse of `pglite-repair --path <foreign pglite dir>` required. Option: refuse when
+  postmaster.pid holds pid ≤ 0 with a very recent mtime, or document the boundary.
+- [ ] **P3 — mixed-version torn-lock read (adversarial F10 residual).** The heartbeat + initial
+  lock writes are atomic (tmp+rename) now, but an OLD gbrain binary writing heartbeats IN PLACE
+  while a NEW binary poll-reads can still catch a torn read → corrupt-lock verdict → a live
+  holder's lock reaped → two writers (the #2348 class, version-skew-triggered). The reap marker
+  quarantines repair, not the concurrent open. Cheap hardening: double-read the lock file (~50ms
+  apart) before declaring it corrupt.
+
+
+- [ ] **P2 — graceful PGLite close on SIGTERM for the remaining long-running paths.**
+  The torn-WAL genesis this wave repairs is an unclean shutdown: `src/core/process-cleanup.ts`
+  releases locks on SIGTERM but never closes the PGlite handle, so `serve` / `jobs work` /
+  `sync` killed mid-write (macOS-upgrade reboot, `systemctl stop`) leave the WAL torn.
+  Autopilot already ships the pattern (d2fd1f29, #3178/#1872: `registerCleanup('autopilot-engine-close', ...)`
+  — abort in-flight work → ≤2s bounded wait inside the 3s cleanup deadline →
+  `engine.disconnect()`, double-call safe; rationale comment at autopilot.ts:438-452).
+  Extend that exact pattern to the remaining long-running PGLite paths (register in
+  connect()/command scope; dedupe so autopilot doesn't double-close), pinned by a serial
+  lifecycle test. Interacts with #2084 exitCode containment + #1337 close ordering — read
+  those comments in pglite-engine.ts first. Auto-repair makes recurrence self-healing
+  meanwhile, so this is prevention, not recovery.
+- [ ] **P3 — pglite upgrade blocker tracker.** Two couplings make a "routine" pglite bump a
+  breaking change: (a) pglite ≥0.5 removes the `@electric-sql/pglite/vector` export that
+  `pglite-engine.ts` imports (verified against npm); (b) the pg_resetwal port
+  (`src/core/pglite-resetwal.ts`) is coupled to the PG17 pg_control layout
+  (`PG_CONTROL_VERSION` 1700 — guarded at runtime by `WalResetUnsupportedError`, so a
+  mismatched bump makes the repair tool refuse every dir rather than corrupt, but it still
+  means the repair feature silently dies). Any future pglite upgrade wave must revisit BOTH
+  together and re-derive the ControlFileData offset table for the new PG major.
+
+## serve --http takes-holders + agent-voice hardening follow-ups (filed v0.42.74.0)
+
+Deferred from the #2529/#2477 security-fix wave (plan-eng-review + codex outside
+voice CLEARED). None block the wave.
+
+- [ ] **P2 — Per-OAuth-client `takes_holders` storage (#2529 follow-up).** Legacy
+  bearer tokens honor `access_tokens.permissions.takes_holders` through
+  `verifyAccessToken`; OAuth clients have no equivalent column on `oauth_clients`,
+  so OAuth-minted tokens fail closed to `['world']`. Needs a schema migration
+  (`oauth_clients.takes_holders` JSONB or TEXT[]) + a `register-client` flag +
+  the `verifyAccessToken` JOIN projection. Include surfacing the EFFECTIVE
+  takes-holder scope in `whoami` output as part of this follow-up, so operators
+  can self-diagnose the legacy-vs-OAuth semantic split instead of reading docs.
+  Where: `src/schema.sql`, `src/core/migrate.ts`, `src/core/oauth-provider.ts`,
+  `src/commands/auth.ts`, `src/core/operations.ts` (whoami).
+- [ ] **P3 — agent-voice Host-header allowlist (DNS-rebinding hardening).** The
+  #2477 fix ships default-deny CORS + an Origin gate on `/session`/`/tool`, but
+  the gate derives self-origin from the `Host` header, so a DNS-rebound page
+  (attacker origin whose host resolves to the operator's loopback) still passes.
+  Validate `Host` against `localhost`/`127.0.0.1`/operator-configured hosts and
+  403 otherwise; slots beside `originAllowed()` in the router. Issue #2477
+  explicitly deferred this. Where: `recipes/agent-voice/code/server.mjs`.
+- [ ] **P3 — Debounce `last_used_at` in the oauth-provider legacy path.** The
+  legacy branch of `verifyAccessToken` fires an unconditional
+  `UPDATE access_tokens SET last_used_at = now()` on EVERY request, while the
+  legacy HTTP transport debounces the same write to once per 60s via a WHERE
+  clause (`src/mcp/http-transport.ts` validateToken). Apply the same pattern —
+  one fewer write per request on the `serve --http` hot path.
+  Where: `src/core/oauth-provider.ts`.
+## v0.42.67.0 follow-ups (Windows build tooling)
+
+Filed as follow-ups from v0.42.67.0 (`.gitattributes` LF pin for `*.sh` +
+`bash` prefix on the 33 `package.json` check commands). Both items are newly
+observable: before that release these checks never executed on Windows at all,
+so nothing about their runtime was measurable.
+
+- [ ] **P2 — three guard scripts exceed the 120s `run-verify-parallel.sh` cap on Windows.**
+  With the dispatch fixed, `bun run verify` on Windows gets 25 passes and 7 failures, and
+  `check:privacy`, `check:test-names` and `check:test-isolation` are timeouts rather than
+  real failures (they pass on Linux and macOS well inside the cap). They walk the tree with
+  per-file shell loops, which is far slower under Windows process creation. Either raise the
+  cap for these three, or replace the per-file loop with a single `grep -r` pass. Same cap
+  swallows `typecheck`, though standalone `bun run typecheck` exits 0.
+- [ ] **P3 — `check:wasm` cannot create its `node_modules` symlink on Windows.**
+  `scripts/check-wasm-embedded.sh` fails with `ln: failed to create symbolic link
+  '/tmp/gbrain-wasm-check.XXXX/node_modules': No such file or directory`. Unprivileged
+  Windows accounts cannot create symlinks without developer mode. Consider a junction, a
+  copy, or skipping the check with a clear message when symlink creation is unavailable.
+
 ## community fix-wave follow-ups (filed v0.42.60.0)
 
-- [ ] **P2 — cherry-pick #2112's uncovered doctor.ts hunk.** Fix-wave A (#2820) superseded
+- [x] **P2 — cherry-pick #2112's uncovered doctor.ts hunk.** Fix-wave A (#2820) superseded
   most of #2112 but not its `checkSubagentCapability` fix (check explicit `models.subagent`
-  before `models.tier.subagent`). Refile or cherry-pick; the rest of that PR is covered.
+  before `models.tier.subagent`). Implemented: `checkSubagentCapability` now resolves
+  `models.subagent` before tier/default fallbacks and has regression coverage.
 
 ## v0.42.59.0 follow-ups (five-fix rollup #2735–#2739)
 
@@ -61,17 +217,20 @@ Deferred from the provider-agnostic plumbing wave (#1249/#1250/#1292/#2271/#2209
 Plan + review trail at `~/.claude/plans/system-instruction-you-are-working-keen-newell.md`.
 The eng-review + Codex outside-voice narrowed the wave to these deferrals:
 
-- [ ] **P2 — Capability-aware query expansion on OpenAI-compat providers (#2372).**
+- [x] **P2 — Capability-aware query expansion on OpenAI-compat providers (#2372).**
   Expansion only runs for recipes that declare an `expansion` touchpoint, and only the
   native providers (anthropic/openai/google) do. To make expansion work on
   litellm/openrouter/groq/together/deepseek you must ADD expansion touchpoints to those
   chat-capable recipes AND add a `generateObject`→`generateText` capability fallback for
   backends without strict structured outputs. Feature-shaped; overlaps the general
   OpenAI-compat proxy story (`docs/designs/COMMUNITY_IDEAS.md`). Community PR #2373 is a
-  starting point. Where: `src/core/ai/gateway.ts:expand`, recipe files, `types.ts` (ExpansionTouchpoint).
-- [ ] **P2 — LiteLLM as a chat/expansion backend.** `litellm-proxy` declares ONLY an
+  starting point. Implemented by #2373 plus the DeepSeek/Groq/Together recipe wave,
+  LiteLLM chat/expansion support, and the OpenRouter expansion touchpoint. Where:
+  `src/core/ai/gateway.ts:expand`, recipe files, `types.ts` (ExpansionTouchpoint).
+- [x] **P2 — LiteLLM as a chat/expansion backend.** `litellm-proxy` declares ONLY an
   embedding touchpoint, so `think`/chat on LiteLLM is dead. Add chat (and expansion) so a
-  LiteLLM proxy is a full LLM backend, not embedding-only. The general OpenAI-compat proxy story.
+  LiteLLM proxy is a full LLM backend, not embedding-only. Implemented by #2208.
+  The general OpenAI-compat proxy story.
 - [ ] **P3 — Per-model embedding dims metadata on `EmbeddingTouchpoint`.** `default_dims`
   is recipe-wide, so a recipe (ollama) can't carry different native dims per model. This
   wave added the modern ollama model NAMES + a `trust_custom_dims` passthrough (user supplies
@@ -2556,7 +2715,7 @@ contributor traps.
 
 - [ ] **v0.37.x: Adopt `resolveDefaultHeaders` for Together / Groq / other attribution-bearing recipes.** v0.37.6.0's `default_headers` / `resolveDefaultHeaders` seam is generic — any recipe whose provider benefits from app-attribution headers can opt in. Together and Groq both have rankings/analytics tied to per-app headers. Add their respective attribution headers to each recipe, similar to OR's `HTTP-Referer` + `X-OpenRouter-Title`. No type-system or gateway changes needed; just `default_headers` blocks on the existing recipes plus `<PROVIDER>_REFERER` / `<PROVIDER>_TITLE` env vars in their `auth_env.optional`. Filed during v0.37.6.0 eng review as a D4 generalization opportunity.
 
-- [ ] **v0.37.x: Guard cli.ts `main()` so importing `buildGatewayConfig` doesn't print help.** v0.37.6.0 exported `buildGatewayConfig` from `src/cli.ts` for test access. Importing it triggers the file's top-level `main()` which prints help to stdout during tests — functionally harmless (tests pass) but noisy. Fix: wrap `main()` in `if (import.meta.main)` so it only runs when cli.ts is the entry point, not when imported. Touches one line; trivial. Filed during v0.37.6.0 implementation.
+- [x] **v0.37.x: Guard cli.ts `main()` so importing `buildGatewayConfig` doesn't print help.** v0.37.6.0 exported `buildGatewayConfig` from `src/cli.ts` for test access. Importing it triggers the file's top-level `main()` which prints help to stdout during tests — functionally harmless (tests pass) but noisy. Fix: wrap `main()` in `if (import.meta.main)` so it only runs when cli.ts is the entry point, not when imported. Touches one line; trivial. Filed during v0.37.6.0 implementation.
 
 
 ## v0.37.4.0 pgGraph CI scaffolding follow-ups (v0.37.x+)
