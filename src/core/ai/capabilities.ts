@@ -85,12 +85,10 @@ export function getProviderCapabilities(modelString: string): ProviderCapabiliti
     );
   }
 
-  // For native providers, the model must be in the recipe's allow-list. For
-  // openai-compatible recipes (litellm, ollama, llama-server), arbitrary model
-  // ids are accepted because the gateway behind the proxy decides what's real.
-  // We don't error here — `assertTouchpoint` already enforces this at gateway
-  // boundary; this function returns capabilities for whatever the user asked
-  // for, on the assumption it'll be validated elsewhere.
+  // Model ids are never validated against recipe model lists (any id goes to
+  // the provider, which is the real authority on what exists). This function
+  // returns capabilities for whatever the user asked for; a nonexistent model
+  // surfaces as the provider's own model_not_found at call time.
 
   const promptCache = chat.supports_prompt_cache;
 
@@ -103,10 +101,12 @@ export function getProviderCapabilities(modelString: string): ProviderCapabiliti
     // Subsequent waves can split this into its own recipe field if a provider
     // ever supports tools without parallel dispatch.
     supportsParallelTools: chat.supports_tools === true,
-    // Not exposed by ChatTouchpoint today — defaults to false. Recipes can add
-    // a `supports_thinking` field later without breaking this helper (it'll
-    // just keep returning false until a recipe sets it).
-    supportsThinking: false,
+    // Recipe-declared thinking-by-default (gbrain#4172): true when the model
+    // reasons without being asked and bills that reasoning as output tokens.
+    // Boolean or per-model predicate, mirroring supports_prompt_cache.
+    supportsThinking: typeof chat.thinking_by_default === 'function'
+      ? chat.thinking_by_default(parsed.modelId)
+      : chat.thinking_by_default === true,
     maxContext: chat.max_context_tokens ?? 128_000,
   };
 }

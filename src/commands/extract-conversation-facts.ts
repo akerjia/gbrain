@@ -69,6 +69,8 @@ import type { Page } from '../core/types.ts';
 import {
   extractFactsFromTurnWithOutcome,
   isFactsExtractionEnabled,
+  type ExtractInput,
+  type ExtractedFact,
 } from '../core/facts/extract.ts';
 import { configureGatewayIfUninitialized, isAvailable, withBudgetTracker } from '../core/ai/gateway.ts';
 import { BudgetTracker, BudgetExhausted } from '../core/budget/budget-tracker.ts';
@@ -91,6 +93,16 @@ import { withRefreshingLock, LockUnavailableError } from '../core/db-lock.ts';
 import { assertFactsEmbeddingDimMatchesConfig } from '../core/embedding-dim-check.ts';
 import { writeReceipt, shortRunId } from '../core/extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../core/extract/rollup-writer.ts';
+import { ALLOWED_TYPES, type AllowedType } from '../core/facts/conversation-types.ts';
+
+// Re-exported verbatim so existing importers (this file's own helpers below
+// and this file's tests) keep working unchanged; doctor.ts, jobs.ts,
+// sources.ts, and the cycle backfill phase import the leaf directly. Moved to
+// src/core/facts/conversation-types.ts (see that file for why) so a
+// consumer that only needs the six values doesn't also pull in this file's
+// own CLI flag surface.
+export { ALLOWED_TYPES };
+export type { AllowedType };
 
 // ---------------------------------------------------------------------------
 // Tunables (exported for tests).
@@ -110,6 +122,25 @@ export const DEFAULT_SEGMENT_MAX_MESSAGES = 30;
 
 /** Minimum messages required for a segment to be worth extracting. */
 export const MIN_SEGMENT_MESSAGES = 2;
+
+// #4136 — labels that are common DOCUMENT section headings, never lost
+// speakers. Gate the DECLINE only (a miss here is warn-noise on healthy
+// pages, never data loss — fail-open by construction).
+const DOC_HEADING_STOPLIST = new Set([
+  'summary', 'results', 'notes', 'context', 'overview', 'background',
+  'example', 'examples', 'usage', 'steps', 'details', 'references',
+  'sources', 'appendix', 'conclusion', 'introduction', 'todo', 'tasks',
+  'output', 'input', 'goals', 'plan', 'ideas', 'agenda', 'decisions',
+  'actions', 'findings',
+]);
+
+/** #4136 — does a folded heading label LOOK like a speaker (1-2 title-cased
+ *  words, not a stoplisted doc heading)? Only speaker-shaped folds can
+ *  decline a page; everything else is warn-only. */
+function isSpeakerShapedHeadingLabel(label: string): boolean {
+  if (!/^[A-Z][A-Za-z0-9._-]*( [A-Z][A-Za-z0-9._-]*)?$/.test(label)) return false;
+  return !DOC_HEADING_STOPLIST.has(label.toLowerCase());
+}
 
 /** Delay between extractor calls so we don't burst the chat provider. */
 export const DEFAULT_INTER_CALL_SLEEP_MS = 200;
@@ -133,21 +164,11 @@ export const MAX_PAGE_BODY_BYTES = 25 * 1024 * 1024;
 /** Default cost cap when no tracker is passed explicitly. */
 export const DEFAULT_MAX_COST_USD = 5.0;
 
-/**
- * Allowlist of page types this command operates on. Mirrors
- * cycle.conversation_facts_backfill.types config default. CLI's
- * `--types` flag is an explicit per-run override; cycle config is
- * the single source of truth.
- */
-export const ALLOWED_TYPES = [
-  'conversation',
-  'meeting',
-  'slack',
-  'email',
-  'imessage',
-  'imessage-daily',
-] as const;
-export type AllowedType = (typeof ALLOWED_TYPES)[number];
+// ALLOWED_TYPES / AllowedType now live in
+// ../core/facts/conversation-types.ts (imported + re-exported above).
+// Mirrors cycle.conversation_facts_backfill.types config default. CLI's
+// `--types` flag is an explicit per-run override; cycle config is the
+// single source of truth.
 
 /**
  * Granular collector page-types that alias into each canonical conversation
@@ -247,9 +268,17 @@ export interface ExtractConversationFactsCoreOpts {
   types?: AllowedType[];
   /** Process a single page; otherwise iterate all matching pages in the source. */
   slug?: string;
+  /**
+   * cathedral-4 batch selector: process exactly these pages (serial, with
+   * the same per-page advisory lock + durable-outcome gates as enumeration).
+   * ONE core invocation per caller run — per-slug invocations multiply
+   * config resolution, checkpoint IO, and receipt writes by page count.
+   * Takes precedence over `slug`.
+   */
+  slugs?: string[];
   /** Show would-do counts without writing facts or advancing checkpoint. */
   dryRun?: boolean;
-  /** Cap pages processed in this invocation. */
+  /** Cap pages processed in this invocation (enumeration path only; ignored when `slugs` is set). */
   limit?: number;
   /** ISO watermark; messages older than this are filtered out. */
   sinceIso?: string;
@@ -286,6 +315,14 @@ export interface ExtractConversationFactsCoreOpts {
    * if you need exact-ceiling compliance.
    */
   workers?: number;
+  /**
+   * Injectable per-segment extractor (BrainBench decision 15). When unset,
+   * the production path is `extractFactsFromTurnWithOutcome` (fail-hard: a
+   * per-segment extraction failure aborts the page). The bench's deterministic
+   * CI mode injects a gold-facts extractor here so segmentation → insertFacts →
+   * dedup → provenance all execute THIS production pipeline with zero LLM calls.
+   */
+  extractor?: (input: ExtractInput) => Promise<ExtractedFact[]>;
 }
 
 export interface ExtractConversationFactsResult {
@@ -300,6 +337,11 @@ export interface ExtractConversationFactsResult {
   pages_skipped_non_extractable: number;
   /** Durable scanned-not-extractable outcomes written by this run. */
   pages_marked_non_extractable: number;
+  /** #4136 — pages declined because the winning heading pattern folded a
+   *  speaker-shaped unrecognized heading and the parse had fewer than two
+   *  distinct speakers (attribution would be wrong). Non-terminal: no
+   *  durable audit row is written, so a future parser/pattern fix retries. */
+  pages_skipped_unrecognized_speaker: number;
   /** Pages whose claim reached extraction but failed before durable outcome. */
   pages_failed: number;
   /**
@@ -671,6 +713,12 @@ interface ExtractCoreState {
   types: AllowedType[];
   signal: AbortSignal | undefined;
   /**
+   * Injected per-segment extractor (BrainBench decision 15). ONLY set when a
+   * caller overrides; when undefined the production fail-hard
+   * `extractFactsFromTurnWithOutcome` path runs.
+   */
+  extractor?: (input: ExtractInput) => Promise<ExtractedFact[]>;
+  /**
    * v0.41.15.0 (D11): shared per-(sourceId, slug) checkpoint map mutated
    * in place from processPage callers. Map.set is atomic in JS's single-
    * threaded event loop so parallel workers (D9) don't clobber each
@@ -883,6 +931,34 @@ async function processPage(
   if (parseResult.timezone_warning) {
     process.stderr.write(parseResult.timezone_warning + '\n');
   }
+  // #4136 — the winning heading pattern folded heading-shaped lines into the
+  // previous turn's body instead of anchoring them. Decline ONLY when a
+  // folded label is speaker-shaped (title-cased, not a doc heading) AND the
+  // parse produced fewer than two distinct speakers — the reported repro is
+  // exactly this shape ([User, User] with the assistant's reply swallowed).
+  // A multi-speaker page with folds is warn-only (residual risk, visible).
+  // phase stays 'regex_match', so the LLM fallback gate below stays closed.
+  const foldedHeadings = parseResult.unrecognized_headings ?? [];
+  const speakerShapedFolds = foldedHeadings.filter(isSpeakerShapedHeadingLabel);
+  const declinedUnrecognizedSpeaker =
+    speakerShapedFolds.length > 0 &&
+    new Set(messages.map((m) => m.speaker)).size < 2;
+  if (foldedHeadings.length > 0) {
+    const detail =
+      `pattern=${parseResult.matched_pattern_id} folded unrecognized heading(s) ` +
+      `[${foldedHeadings.join(', ')}] into the previous turn`;
+    if (declinedUnrecognizedSpeaker) {
+      process.stderr.write(
+        `[extract-conversation-facts] ${page.slug}: ${detail}; declining extraction (speaker attribution would be wrong)\n`,
+      );
+      state.result.pages_skipped_unrecognized_speaker++;
+      messages = [];
+    } else if (speakerShapedFolds.length > 0) {
+      process.stderr.write(
+        `[extract-conversation-facts] ${page.slug}: ${detail}; proceeding (speakers alternate) — facts near those headings may be misattributed\n`,
+      );
+    }
+  }
   // The fallback runs only for a true built-in miss. It never replaces or
   // polishes a deterministic parse, and it remains unreachable unless the
   // operator explicitly enables conversation_parser.llm_fallback_enabled.
@@ -917,7 +993,13 @@ async function processPage(
     if (
       !state.dryRun &&
       parseResult.phase !== 'no_match' &&
-      allSegments.length === 0
+      allSegments.length === 0 &&
+      // #4136 — a decline must stay NON-TERMINAL. The audit row is keyed by
+      // a content versionToken and skips the page on every future run; a
+      // declined page must retry once the parser learns the label instead.
+      // (Trade, stated: pre-existing wrong-speaker facts also skip the
+      // orphan cleanup below until the page re-extracts.)
+      !declinedUnrecognizedSpeaker
     ) {
       if (await snapshotIsCurrent(state.engine, state.sourceId, snapshot)) {
         const cleaned = await deleteOrphanFactsForPage(
@@ -979,22 +1061,38 @@ async function processPage(
     const text = renderSegmentForExtraction(page.title || page.slug, seg);
     const sessionId = `${PER_SEGMENT_SOURCE_PREFIX}:${page.slug}`;
 
-    const extraction = await extractFactsFromTurnWithOutcome({
-      turnText: text,
-      sessionId,
-      source: PER_SEGMENT_SOURCE_PREFIX,
-      engine: state.engine,
-      abortSignal: state.signal,
-    });
-    if (!extraction.ok) {
-      const detail = extraction.error instanceof Error
-        ? `: ${extraction.error.message}`
-        : '';
-      throw new Error(
-        `segment ${seg.startIso}..${seg.endIso} extraction failed (${extraction.reason})${detail}`,
-      );
+    // BrainBench (decision 15) may inject a deterministic extractor; when it
+    // does, use it (returns facts directly — the hermetic gold path). The
+    // DEFAULT production path is master's fail-hard-with-reason contract: a
+    // per-segment extraction failure aborts the page rather than silently
+    // dropping facts.
+    let extracted: ExtractedFact[];
+    if (state.extractor) {
+      extracted = await state.extractor({
+        turnText: text,
+        sessionId,
+        source: PER_SEGMENT_SOURCE_PREFIX,
+        engine: state.engine,
+        abortSignal: state.signal,
+      });
+    } else {
+      const extraction = await extractFactsFromTurnWithOutcome({
+        turnText: text,
+        sessionId,
+        source: PER_SEGMENT_SOURCE_PREFIX,
+        engine: state.engine,
+        abortSignal: state.signal,
+      });
+      if (!extraction.ok) {
+        const detail = extraction.error instanceof Error
+          ? `: ${extraction.error.message}`
+          : '';
+        throw new Error(
+          `segment ${seg.startIso}..${seg.endIso} extraction failed (${extraction.reason})${detail}`,
+        );
+      }
+      extracted = extraction.facts;
     }
-    const extracted = extraction.facts;
 
     state.result.segments_processed++;
     segmentsThisPage++;
@@ -1155,6 +1253,7 @@ export async function runExtractConversationFactsCore(
     pages_skipped_completed: 0,
     pages_skipped_non_extractable: 0,
     pages_marked_non_extractable: 0,
+    pages_skipped_unrecognized_speaker: 0,
     pages_failed: 0,
     pages_llm_fallback: 0,
     pages_lock_skipped: 0,
@@ -1223,6 +1322,7 @@ export async function runExtractConversationFactsCore(
     segmentLimit,
     types,
     signal,
+    extractor: opts.extractor,
     cpMap: new Map(),
     llmFallbackModel,
   };
@@ -1303,7 +1403,24 @@ export async function runExtractConversationFactsCore(
     // types are not silently skipped (see ALLOWED_TYPE_ALIASES).
     const concreteTypes = pageTypesForAllowed(types);
 
-    if (opts.slug) {
+    if (opts.slugs !== undefined) {
+      // Batch mode is selected by the PRESENCE of the selector: an empty
+      // list means "process exactly these zero pages" (a no-op), never a
+      // fall-through to full-corpus enumeration and its LLM spend.
+      for (const slug of opts.slugs) {
+        if (signal?.aborted) throw new Error('aborted');
+        const page = await engine.getPage(slug, { sourceId });
+        if (!page) {
+          result.pages_skipped_disappeared++;
+          continue;
+        }
+        if (!concreteTypes.includes(page.type)) {
+          result.pages_skipped++;
+          continue;
+        }
+        await processPageWithLock(page);
+      }
+    } else if (opts.slug) {
       const page = await engine.getPage(opts.slug, { sourceId });
       if (!page) {
         result.pages_skipped_disappeared++;
@@ -1753,7 +1870,13 @@ export async function runExtractConversationFacts(
   // reporting an availability error (#2590).
   if (!parsed.dryRun && !isAvailable('chat')) configureGatewayIfUninitialized();
   if (!parsed.dryRun && !isAvailable('chat')) {
-    console.error('Chat gateway unavailable. Configure an Anthropic or compatible chat model, or pass --dry-run to preview segmentation.');
+    console.error(
+      'Chat gateway unavailable. Set a provider key (OPENAI_API_KEY or ANTHROPIC_API_KEY — ' +
+      'extraction routes to whichever is present), or configure a model explicitly ' +
+      '(`gbrain config set facts.extraction_model <provider:model>`), or pass --dry-run to ' +
+      'preview segmentation. Keyless brains capture memory via agent-authored `## Facts` ' +
+      'fences and the `remember` verb instead.',
+    );
     process.exit(1);
   }
 
@@ -1767,6 +1890,7 @@ export async function runExtractConversationFacts(
     pages_skipped_completed: 0,
     pages_skipped_non_extractable: 0,
     pages_marked_non_extractable: 0,
+    pages_skipped_unrecognized_speaker: 0,
     pages_failed: 0,
     pages_llm_fallback: 0,
     pages_lock_skipped: 0,
@@ -1812,6 +1936,7 @@ export async function runExtractConversationFacts(
       aggregate.pages_skipped_completed += perSource.pages_skipped_completed;
       aggregate.pages_skipped_non_extractable += perSource.pages_skipped_non_extractable;
       aggregate.pages_marked_non_extractable += perSource.pages_marked_non_extractable;
+      aggregate.pages_skipped_unrecognized_speaker += perSource.pages_skipped_unrecognized_speaker;
       aggregate.pages_failed += perSource.pages_failed;
       aggregate.pages_llm_fallback += perSource.pages_llm_fallback;
       aggregate.pages_lock_skipped += perSource.pages_lock_skipped;
@@ -1850,6 +1975,9 @@ export async function runExtractConversationFacts(
   }
   if (aggregate.pages_skipped_non_extractable > 0) {
     console.log(`  Skipped ${aggregate.pages_skipped_non_extractable} page(s) previously scanned as not extractable.`);
+  }
+  if (aggregate.pages_skipped_unrecognized_speaker > 0) {
+    console.log(`  Declined ${aggregate.pages_skipped_unrecognized_speaker} page(s) with unrecognized speaker headings (attribution would be wrong; retried next run).`);
   }
   if (aggregate.pages_marked_non_extractable > 0) {
     console.log(`  Marked ${aggregate.pages_marked_non_extractable} page(s) as scanned, not extractable.`);

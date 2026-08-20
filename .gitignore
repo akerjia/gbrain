@@ -49,7 +49,6 @@ test/fixtures/pglite-snapshot.version
 
 # Private brain reports — never check these in (per CLAUDE.md privacy rule)
 reports/network-intelligence/
-
 # Auto-managed by gbrain (db_only directories)
 meta/
 collision-takes/
@@ -60,3 +59,8 @@ compress-safety/
 media/x/
 media/articles/
 meetings/transcripts/
+graphify-out/
+
+# Coverage lane output (COVERAGE_DIR opt-in in test-shard.sh /
+# run-serial-tests.sh / run-e2e.sh; merged by scripts/merge-lcov.ts)
+.coverage/
