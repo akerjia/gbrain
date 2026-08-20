@@ -5,8 +5,8 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
-  schedule:
-    - cron: '0 6 * * *'  # Nightly at 6am UTC
+  # 2026-08-21: schedule 已移除——fork 是消费型（本地补丁+编译），无需每日跑上游 E2E。
+  # 保留 push/PR/workflow_dispatch 触发，供提交 PR 回上游或手动验证时使用。
   workflow_dispatch:
 
 permissions:

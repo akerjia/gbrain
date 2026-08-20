@@ -12,8 +12,7 @@ on:
     paths:
       - 'bun.lock'
       - 'package.json'
-  schedule:
-    - cron: '30 6 * * 1'  # weekly, Monday 06:30 UTC
+  # 2026-08-21: schedule 已移除——fork 是消费型，每周安全扫描交给 PR 触发即可。
   workflow_dispatch:
 
 permissions:
