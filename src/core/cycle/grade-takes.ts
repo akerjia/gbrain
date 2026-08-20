@@ -314,7 +314,7 @@ Take claim: ${take.claim}
 `;
     }
     const snippets = results
-      .map((r, i) => `[source ${i + 1}] ${r.slug ?? 'unknown'} (score: ${r.score?.toFixed(3) ?? 'N/A'})\n${(r.content ?? '').slice(0, 600)}`)
+      .map((r, i) => `[source ${i + 1}] ${r.slug ?? 'unknown'} (score: ${r.score?.toFixed(3) ?? 'N/A'})\\n${(r.chunk_text ?? '').slice(0, 600)}`)
       .join('\n\n---\n\n');
     return `Evidence from brain search:\n\n${snippets}\n\nTake claim being evaluated: ${take.claim}`;
   } catch (err) {
