@@ -741,16 +741,18 @@ class ProposeTakesPhase extends BaseCyclePhase {
       // SUCCESSFUL empty extract — the extractor-throw path `continue`s above,
       // so failed pages are retried rather than tombstoned.
       if (proposals.length === 0) {
+        const tombstoneHash = contentHash(EMPTY_EXTRACTION_TOMBSTONE_TEXT);
         await engine.executeRaw(
           `INSERT INTO take_proposals
-             (source_id, page_slug, content_hash, prompt_version, proposal_run_id,
+             (source_id, page_slug, content_hash, claim_hash, prompt_version, proposal_run_id,
               claim_text, kind, holder, weight, domain, dedup_against_fence_rows, model_id, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'rejected')
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'rejected')
            ON CONFLICT (source_id, page_slug, content_hash, prompt_version, md5(claim_text)) DO NOTHING`,
           [
             sourceId,
             page.slug,
             ch,
+            tombstoneHash,
             promptVersion,
             proposalRunId,
             EMPTY_EXTRACTION_TOMBSTONE_TEXT,
