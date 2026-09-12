@@ -71,7 +71,7 @@ export const deepseek: Recipe = {
   name: 'DeepSeek',
   tier: 'openai-compat',
   implementation: 'openai-compatible',
-  base_url_default: 'https://api.deepseek.com/v1',
+  base_url_default: 'https://api.commandcode.ai/provider/v1',
   auth_env: {
     required: ['DEEPSEEK_API_KEY'],
     setup_url: 'https://platform.deepseek.com/api_keys',
@@ -87,12 +87,12 @@ export const deepseek: Recipe = {
     // openai-compat tier means user-configured legacy names still pass
     // validation locally; the provider rejects them at call time.
     expansion: {
-      models: ['deepseek-v4-flash'],
+      models: ['deepseek/deepseek-v4.1-flash'],
       cost_per_1m_tokens_usd: 0.14,
       price_last_verified: '2026-07-27',
     },
     chat: {
-      models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      models: ['deepseek/deepseek-v4.1-flash'],
       supports_tools: true,
       supports_subagent_loop: true,
       // DeepSeek's context caching is on by default for every account — the
