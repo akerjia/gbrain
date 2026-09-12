@@ -160,7 +160,11 @@ export const CODE_DEF_DESCRIPTION =
   "case; multiple results indicate same-name symbols across files (which is information " +
   "in itself). " +
   "Returns: `{symbol, count, defs: [{slug, file, language, symbol_type, start_line, end_line, snippet}]}`. " +
-  "Filter by --lang to scope a polyglot brain (e.g., lang='typescript').";
+  "Filter by --lang to scope a polyglot brain (e.g., lang='typescript'). " +
+  "When count is 0 but the name still occurs in file text, the result also carries " +
+  "`textual_hits` + `textual_hit_languages`: those chunks have no indexed symbol_name " +
+  "because their parser failed (text-level fallback, symbol_type='unparsed'), so " +
+  "`count: 0` must NOT be read as 'this symbol does not exist'.";
 
 export const CODE_REFS_DESCRIPTION =
   "Find every reference to a symbol across the codebase (every file, every line). " +
@@ -168,7 +172,8 @@ export const CODE_REFS_DESCRIPTION =
   "strings, imports, type annotations — not just call sites; (2) returns line " +
   "numbers, not symbol-qualified edges. Use this when planning a rename or " +
   "deprecation where you need to touch every literal mention. " +
-  "Returns: `{symbol, count, refs: [{slug, file, language, line, context}]}`.";
+  "Returns: `{symbol, count, refs: [{slug, file, language, symbol_name, symbol_type, " +
+  "start_line, end_line, snippet}]}` (snippet = first 500 chars of the chunk).";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // PR1 — skill catalog over MCP (list_skills / get_skill). The agent repo's

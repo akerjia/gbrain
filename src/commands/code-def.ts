@@ -142,6 +142,51 @@ function shouldEmitJson(args: string[]): boolean {
   return !process.stdout.isTTY;
 }
 
+/**
+ * ICN P013 (2026-09-12): count code chunks whose TEXT mentions the symbol.
+ *
+ * `findCodeDef` matches `content_chunks.symbol_name`, and that column is NULL
+ * for every fallback chunk. So a symbol that IS visible in a file's text but
+ * whose language failed to parse (tree-sitter threw → the whole file's semantic
+ * chunks were dropped, see P012) reads as a bare `count: 0 / ready: true`,
+ * indistinguishable from "this symbol does not exist".
+ * Measured on icn-scripts: 67% of bash chunks are such fallbacks.
+ *
+ * Deliberately cause-agnostic: true whether symbol_name is NULL from a parse
+ * crash, a missing grammar, or pre-upgrade chunk data. Reuses the
+ * `chunk_text ILIKE` path code-refs already ships. Supplementary only — the
+ * caller must never fail the command on this probe.
+ */
+export async function probeTextualHits(
+  engine: BrainEngine,
+  symbol: string,
+  opts: { language?: string; sourceId?: string; allSources?: boolean } = {},
+): Promise<{ hits: number; languages: string[] }> {
+  const params: unknown[] = [`%${symbol}%`];
+  let whereLang = '';
+  if (opts.language) {
+    params.push(opts.language);
+    whereLang = `AND cc.language = $${params.length}`;
+  }
+  const whereSource = pushSourcePredicate(params, opts);
+  const rows = await engine.executeRaw<{ language: string | null; n: number | string }>(
+    `SELECT cc.language, count(*) AS n
+     FROM content_chunks cc
+     JOIN pages p ON p.id = cc.page_id
+     WHERE p.page_kind = 'code'
+       AND cc.chunk_text ILIKE $1
+       ${whereLang}
+       ${whereSource}
+     GROUP BY cc.language
+     ORDER BY n DESC
+     LIMIT 10`,
+    params,
+  );
+  const languages = rows.map((r) => r.language).filter((l): l is string => Boolean(l));
+  const hits = rows.reduce((sum, r) => sum + Number(r.n), 0);
+  return { hits, languages };
+}
+
 export async function runCodeDef(engine: BrainEngine, args: string[]): Promise<void> {
   const positional = positionalArgs(args);
   const sym = positional[0];
@@ -182,9 +227,16 @@ export async function runCodeDef(engine: BrainEngine, args: string[]): Promise<v
     // read as a bare ready:true / "symbol does not exist". Probe the distinct
     // symbol types the name DOES have and surface the filtered ones.
     let filteredTypes: string[] = [];
+    // ICN P013 (2026-09-12): second supplementary signal — see probeTextualHits.
+    let textual: { hits: number; languages: string[] } = { hits: 0, languages: [] };
     if (results.length === 0) {
       try {
         filteredTypes = await probeFilteredSymbolTypes(engine, sym, { language, sourceId, allSources });
+      } catch {
+        // Supplementary signal — never fail the command on the probe.
+      }
+      try {
+        textual = await probeTextualHits(engine, sym, { language, sourceId, allSources });
       } catch {
         // Supplementary signal — never fail the command on the probe.
       }
@@ -193,6 +245,14 @@ export async function runCodeDef(engine: BrainEngine, args: string[]): Promise<v
       ? `Symbol "${sym}" IS indexed, but only with symbol type(s) outside the definition allowlist: ` +
         `${filteredTypes.join(', ')}. Likely a DEF_TYPES gap or pre-upgrade chunk data — ` +
         'try `gbrain code-refs` for these sites, and consider re-syncing the source.'
+      : null;
+    const textualHint = textual.hits > 0
+      ? `"${sym}" is NOT an indexed definition, but its text appears in ${textual.hits} code chunk(s)` +
+        (textual.languages.length > 0 ? ` (${textual.languages.join(', ')})` : '') +
+        '. Common cause: that language\'s parser failed on these files, so their chunks are ' +
+        "text-level fallbacks (symbol_name NULL; symbol_type='unparsed' — see gbrain P012). Read " +
+        'the sites with `gbrain code-refs`; blast radius = `SELECT language, count(*) FROM ' +
+        "content_chunks WHERE symbol_type='unparsed' GROUP BY 1`."
       : null;
     if (shouldEmitJson(args)) {
       console.log(JSON.stringify({
@@ -203,9 +263,11 @@ export async function runCodeDef(engine: BrainEngine, args: string[]): Promise<v
         status: readiness.status,
         ready: readiness.ready,
         ...(readiness.scoped_source_id ? { scoped_source_id: readiness.scoped_source_id } : {}),
-        ...(filteredTypes.length > 0
-          ? { filtered_symbol_types: filteredTypes, hint: filteredHint }
+        ...(filteredTypes.length > 0 ? { filtered_symbol_types: filteredTypes } : {}),
+        ...(textual.hits > 0
+          ? { textual_hits: textual.hits, textual_hit_languages: textual.languages }
           : {}),
+        ...(filteredHint || textualHint ? { hint: filteredHint ?? textualHint } : {}),
         results,
       }, null, 2));
     } else {
@@ -214,6 +276,7 @@ export async function runCodeDef(engine: BrainEngine, args: string[]): Promise<v
           ? `No definitions found for "${sym}" in source '${sourceId}'. Try --all-sources to search every source.`
           : `No definitions found for "${sym}"`);
         if (filteredHint) console.log(filteredHint);
+        if (textualHint) console.log(textualHint);
         const hint = readinessHint(readiness);
         if (hint) console.log(hint);
       } else {
