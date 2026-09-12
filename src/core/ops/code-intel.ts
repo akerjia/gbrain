@@ -137,9 +137,32 @@ const code_def: Operation = {
       limit: (p.limit as number) ?? 20,
       language: (p.lang as string) || undefined,
     });
+    // code_def is source-scoped through readPolicyOpts (trust+grant); readiness
+    // is 'symbol' grain and carries the same policy.
     const { resolveCodeReadiness, readinessHint } = await import('../code-graph-readiness.ts');
     const readiness = await resolveCodeReadiness(ctx.engine, { ...policy, remote: ctx.remote, kind: 'symbol', count: defs.length });
-    return { symbol: p.symbol as string, count: defs.length, status: readiness.status, ready: readiness.ready, hint: readinessHint(readiness), defs };
+    // ICN P013 (2026-09-12): mirror the CLI's supplementary signal — a count:0 whose
+    // text IS present in the corpus must not read as "symbol does not exist". Only
+    // runs on the empty result (cost guard), and never fails the op.
+    let textual: { hits: number; languages: string[] } | null = null;
+    if (defs.length === 0) {
+      try {
+        const { probeTextualHits } = await import('../../commands/code-def.ts');
+        const th = await probeTextualHits(ctx.engine, p.symbol as string, {
+          language: (p.lang as string) || undefined,
+          ...policy,
+        });
+        if (th.hits > 0) textual = th;
+      } catch {
+        // Supplementary signal — never fail the op on the probe.
+      }
+    }
+    return {
+      symbol: p.symbol as string, count: defs.length, status: readiness.status, ready: readiness.ready,
+      hint: readinessHint(readiness),
+      ...(textual ? { textual_hits: textual.hits, textual_hit_languages: textual.languages } : {}),
+      defs,
+    };
   },
   cliHints: { name: 'code_def', hidden: true },
 };
