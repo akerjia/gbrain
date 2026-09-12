@@ -71,7 +71,7 @@ export const deepseek: Recipe = {
   name: 'DeepSeek',
   tier: 'openai-compat',
   implementation: 'openai-compatible',
-  base_url_default: 'https://api.deepseek.com/v1',
+  base_url_default: 'https://api.commandcode.ai/provider/v1',
   auth_env: {
     required: ['DEEPSEEK_API_KEY'],
     setup_url: 'https://platform.deepseek.com/api_keys',
@@ -90,12 +90,15 @@ export const deepseek: Recipe = {
     // Rates are DeepSeek's PEAK cache-miss rates (an upper bound; off-peak
     // bills half), matching model-pricing.ts.
     expansion: {
-      models: ['deepseek-flash', 'deepseek-v4-flash'],
+      // ICN P014: our runtime routes DeepSeek through commandcode (GOAT), whose
+      // model id is namespaced — keep upstream's names too, they validate the
+      // vendor-native path. See provider_base_urls.deepseek in ~/.gbrain/config.json.
+      models: ['deepseek/deepseek-v4.1-flash', 'deepseek-flash', 'deepseek-v4-flash'],
       cost_per_1m_tokens_usd: 0.30,
       price_last_verified: '2026-10-05',
     },
     chat: {
-      models: ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro'],
+      models: ['deepseek/deepseek-v4.1-flash', 'deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro'],
       supports_tools: true,
       supports_subagent_loop: true,
       // DeepSeek's context caching is on by default for every account — the
