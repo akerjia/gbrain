@@ -326,7 +326,9 @@ function warnParseFailure(language: SupportedCodeLanguage, filePath: string, err
   console.warn(
     `[gbrain chunker] ${language}: semantic parsing unavailable (${msg}); ` +
     `falling back to text chunks for every .${language} file — code-def/code-callers ` +
-    `will return 0 for this language. First seen: ${filePath}`,
+    `will return 0 for this language. First seen: ${filePath}. ` +
+    `Affected chunks are tagged symbol_type='unparsed' (ICN P012) — ` +
+    `count them: SELECT language, count(*) FROM content_chunks WHERE symbol_type='unparsed' GROUP BY 1;`,
   );
 }
 
@@ -768,9 +770,9 @@ async function chunkParsedLanguage(
       if (e instanceof ChunkerTimeoutError) {
         console.warn(
           `[gbrain chunker] timeout parsing ${filePath} after ${timeoutMs}ms; ` +
-          `falling back to recursive chunks`,
+          `falling back to recursive chunks (tagged symbol_type='unparsed')`,
         );
-        return { chunks: fallbackChunks(source, filePath, language, opts), edges: [] };
+        return { chunks: fallbackChunks(source, filePath, language, opts, 'unparsed'), edges: [] };
       }
       throw e;
     }
@@ -888,7 +890,7 @@ async function chunkParsedLanguage(
     return { chunks: capOversizedChunks(mergeSmallSiblings(chunks, chunkTarget), filePath, language, opts), edges: rawEdges };
   } catch (err: unknown) {
     warnParseFailure(language, filePath, err);
-    return { chunks: fallbackChunks(source, filePath, language, opts), edges: [] };
+    return { chunks: fallbackChunks(source, filePath, language, opts, 'unparsed'), edges: [] };
   } finally {
     // v0.31.2 (codex C4): single cleanup site so a thrown
     // ChunkerTimeoutError, edge-extraction failure, or any other
@@ -1149,13 +1151,21 @@ function fallbackChunks(
   filePath: string,
   language: SupportedCodeLanguage,
   opts: CodeChunkOptions,
+  // ICN P012 (2026-09-12) — 兜底 chunk 的 symbol_type 标签，区分「正常兜底」与「解析失败」：
+  //   'module'   = 无 grammar / 无顶层语义节点 / 解析成功但无 chunk（都是正常的兜底）
+  //   'unparsed' = 解析器**没能完成它的工作**（超时 / 抛异常）⇒ 整文件的语义 chunk 全丢，
+  //                symbol_name 永远为 NULL。标记出来让丢失在 DB 里可查、可计数：
+  //                SELECT language, count(*) FROM content_chunks WHERE symbol_type='unparsed' GROUP BY 1;
+  // 动机：bash 语料实测 81.4% 因 `[ x != y ]` / `case` 触发解析崩溃静默降级，与
+  //       「该语言本就无语义节点」在数据上不可区分（两者都是 symbol_type='module'）。
+  symbolType: string = 'module',
 ): CodeChunk[] {
   const size = opts.fallbackChunkSizeWords ?? 300;
   const overlap = opts.fallbackOverlapWords ?? 50;
   const chunks = recursiveChunk(source, { chunkSize: size, chunkOverlap: overlap }).map((chunk, index) =>
     buildChunk({
       body: chunk.text, filePath, language,
-      symbolName: null, symbolType: 'module',
+      symbolName: null, symbolType,
       startLine: 1, endLine: countLines(chunk.text),
       index,
     }),
