@@ -17,6 +17,8 @@
  *
  * Eligible:
  *   - parsed is non-null
+ *   - slug is non-empty after trim (P015: an empty slug would otherwise be
+ *     submitted as a doomed facts-absorb job — see the guard in the body)
  *   - slug does NOT start with `wiki/agents/` (subagent scratch is its
  *     own world; not user-meaningful for hot memory)
  *   - frontmatter.dream_generated is NOT `true` (anti-loop: never extract
@@ -82,6 +84,14 @@ export function isFactsBackstopEligible(
   parsed: { type: PageType; compiled_truth: string; frontmatter: Record<string, unknown> } | null | undefined,
 ): EligibilityResult {
   if (!parsed) return { ok: false, reason: 'no_parsed_page' };
+  // P015 (ICN, 2026-09-16): 空 slug 必须在此拦下 —— 否则本函数会在空 slug 上
+  //   返回 ok（body≥80 + type 合格即可），调用方 runFactsBackstop 随即把
+  //   `slug: ''` 提交成一条注定 dead 的 facts-absorb 作业（执行侧
+  //   src/commands/jobs.ts 的 handler 抛 'facts-absorb job requires data.slug'，
+  //   max_attempts 用尽即 dead）。2026-09-15 实测 dead 队列里就有这样一条
+  //   （id 64748，source=sync:import）。提交侧不产生无效载荷 = 除根，
+  //   而不是靠执行侧报错后清理。纯空白 slug 同理（trim 后为空）。
+  if (!slug || !slug.trim()) return { ok: false, reason: 'no_slug' };
   if (slug.startsWith('wiki/agents/')) return { ok: false, reason: 'subagent_namespace' };
   if (parsed.frontmatter && parsed.frontmatter.dream_generated === true) {
     return { ok: false, reason: 'dream_generated' };
