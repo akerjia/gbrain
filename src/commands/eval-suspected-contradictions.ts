@@ -246,8 +246,12 @@ function exclusiveOneOf(...flags: Array<unknown>): boolean {
  *     verdicts) must NOT render the "0 / N contradictions" headline or the
  *     Wilson CI — both would present an all-error run as a clean pass.
  *     A loud banner replaces them.
- *   - The judge-errors line prints ALL FIVE error buckets (unknown included)
+ *   - The judge-errors line prints ALL SIX error buckets (unknown included)
  *     so the printed buckets always sum to the printed total.
+ *   - 2026-09-16: when any judge error occurred, the distinct reason texts
+ *     from `judge_error_rows` are printed too. The counts say "how many";
+ *     without the reasons an all-error run was undiagnosable from its own
+ *     output (the real cause had to be recovered by hand).
  */
 export function buildRunSummaryLines(r: ProbeReport, capHitMidRun: boolean): string[] {
   const pct = (n: number) => (n * 100).toFixed(0);
@@ -279,7 +283,23 @@ export function buildRunSummaryLines(r: ProbeReport, capHitMidRun: boolean): str
   lines.push(`    temporal_evolution:    ${vb.temporal_evolution}`);
   lines.push(`    negation_artifact:     ${vb.negation_artifact}`);
   lines.push(`    no_contradiction:      ${vb.no_contradiction}`);
-  lines.push(`  Judge errors: ${r.judge_errors.total} (parse_fail=${r.judge_errors.parse_fail} timeout=${r.judge_errors.timeout} http_5xx=${r.judge_errors.http_5xx} refusal=${r.judge_errors.refusal} unknown=${r.judge_errors.unknown})`);
+  lines.push(`  Judge errors: ${r.judge_errors.total} (parse_fail=${r.judge_errors.parse_fail} timeout=${r.judge_errors.timeout} http_5xx=${r.judge_errors.http_5xx} refusal=${r.judge_errors.refusal} auth_or_quota=${r.judge_errors.auth_or_quota} unknown=${r.judge_errors.unknown})`);
+  // 2026-09-16: surface WHY, not just how many. Distinct reasons only (a
+  // 500-pair quota failure is one sentence, not 500); capped so a pathological
+  // run can't flood stderr. Absent on reports persisted before the field.
+  const errorRows = r.judge_error_rows ?? [];
+  if (errorRows.length > 0) {
+    const distinct = [...new Set(errorRows.map((e) => e.reason))];
+    const shown = distinct.slice(0, 5);
+    lines.push(`  Judge error reasons (${distinct.length} distinct):`);
+    for (const reason of shown) {
+      const kind = errorRows.find((e) => e.reason === reason)?.kind ?? 'unknown';
+      lines.push(`    [${kind}] ${reason.slice(0, 300)}`);
+    }
+    if (distinct.length > shown.length) {
+      lines.push(`    ... and ${distinct.length - shown.length} more`);
+    }
+  }
   lines.push(`  Cache: ${r.cache.hits} hits / ${r.cache.misses} misses (${pct(r.cache.hit_rate)}% hit-rate)`);
   lines.push(`  Source-tier breakdown:`);
   lines.push(`    curated_vs_curated: ${r.source_tier_breakdown.curated_vs_curated}`);

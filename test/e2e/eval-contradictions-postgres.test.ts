@@ -78,7 +78,7 @@ function mkReport(opts: Partial<ProbeReport> = {}): ProbeReport {
       queries_with_contradiction: 12,
       wilson_ci_95: { point: 0.24, lower: 0.14, upper: 0.37 },
     },
-    judge_errors: { parse_fail: 1, refusal: 0, timeout: 0, http_5xx: 2, unknown: 0, total: 3, note: 'n' },
+    judge_errors: { parse_fail: 1, refusal: 0, timeout: 0, http_5xx: 2, auth_or_quota: 0, unknown: 0, total: 3, note: 'n' },
     cost_usd: { judge: 1.18, embedding: 0.005, total: 1.185, estimate_note: 'approx' },
     cache: { hits: 87, misses: 213, hit_rate: 0.29 },
     duration_ms: 45000,

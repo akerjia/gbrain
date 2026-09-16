@@ -56,7 +56,7 @@ function mkReport(runId: string, overrides: Partial<ProbeReport> = {}): ProbeRep
       wilson_ci_95: { point: 0.24, lower: 0.14, upper: 0.37 },
     },
     judge_errors: {
-      parse_fail: 0, refusal: 0, timeout: 0, http_5xx: 0, unknown: 0, total: 0,
+      parse_fail: 0, refusal: 0, timeout: 0, http_5xx: 0, auth_or_quota: 0, unknown: 0, total: 0,
       note: 'errors counted toward denominator',
     },
     cost_usd: { judge: 1.0, embedding: 0.005, total: 1.005, estimate_note: 'approx' },
