@@ -226,6 +226,36 @@ describe('runContradictionProbe', () => {
     expect(out.report.judge_errors.total).toBe(1);
     expect(out.report.total_contradictions_flagged).toBe(0);
     expect(out.judgeErrorRows.length).toBe(1);
+    // 2026-09-16: the reason must reach the persisted report, not just the
+    // side channel — counts alone left an all-error run undiagnosable.
+    expect(out.report.judge_error_rows?.length).toBe(1);
+    expect(out.report.judge_error_rows?.[0].kind).toBe('http_5xx');
+    expect(out.report.judge_error_rows?.[0].reason).toContain('simulated transient 503');
+  });
+
+  test('quota/auth judge failure lands in report as auth_or_quota with reason text', async () => {
+    const idA = await seedPage('a/1', 'A');
+    const idB = await seedPage('b/1', 'B');
+    const out = await runContradictionProbe({
+      engine,
+      queries: ['q'],
+      judgeFn: async () => {
+        throw new Error('You have insufficient credits to make this request.');
+      },
+      searchFn: async () => [
+        mkResult('a/1', idA, 1, 'chunk a'),
+        mkResult('b/1', idB, 2, 'chunk b'),
+      ],
+      budgetUsd: 5,
+    });
+    // The run is an all-error run and must say so...
+    expect(out.report.run_status).toBe('judge_failed');
+    // ...and the persisted report must name the cause, not just count it.
+    expect(out.report.judge_errors.auth_or_quota).toBe(1);
+    expect(out.report.judge_errors.unknown).toBe(0);
+    const row = out.report.judge_error_rows?.[0];
+    expect(row?.kind).toBe('auth_or_quota');
+    expect(row?.reason).toContain('insufficient credits');
   });
 
   test('cost cap mid-run stop with partial report', async () => {

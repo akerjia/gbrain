@@ -80,7 +80,7 @@ function mkReport(opts: Partial<ProbeReport> & {
       queries_with_contradiction: findings.length > 0 ? Math.max(1, findings.length) : 0,
       wilson_ci_95: { point: 0.24, lower: 0.14, upper: 0.37 },
     },
-    judge_errors: { parse_fail: 0, refusal: 0, timeout: 0, http_5xx: 0, unknown: 0, total: 0, note: 'n' },
+    judge_errors: { parse_fail: 0, refusal: 0, timeout: 0, http_5xx: 0, auth_or_quota: 0, unknown: 0, total: 0, note: 'n' },
     cost_usd: { judge: 1, embedding: 0.01, total: 1.01, estimate_note: 'approx' },
     cache: { hits: 0, misses: 0, hit_rate: 0 },
     duration_ms: 45000,

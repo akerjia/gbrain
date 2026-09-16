@@ -201,7 +201,7 @@ function mkSeedReport(promptVersion: string): ProbeReport {
       queries_with_contradiction: 12,
       wilson_ci_95: { point: 0.24, lower: 0.14, upper: 0.37 },
     },
-    judge_errors: { parse_fail: 0, refusal: 0, timeout: 0, http_5xx: 0, unknown: 0, total: 0, note: '' },
+    judge_errors: { parse_fail: 0, refusal: 0, timeout: 0, http_5xx: 0, auth_or_quota: 0, unknown: 0, total: 0, note: '' },
     cost_usd: { judge: 1.0, embedding: 0.005, total: 1.005, estimate_note: '' },
     cache: { hits: 0, misses: 0, hit_rate: 0 },
     duration_ms: 45000,

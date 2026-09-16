@@ -91,8 +91,21 @@ export interface JudgeVerdict {
   resolution_kind: ResolutionKind | null;
 }
 
-/** Error classes counted toward the run's denominator (NOT silent skips). */
-export type JudgeErrorKind = 'parse_fail' | 'refusal' | 'timeout' | 'http_5xx' | 'unknown';
+/**
+ * Error classes counted toward the run's denominator (NOT silent skips).
+ *
+ * `auth_or_quota` (2026-09-16): account/auth-shaped failures — exhausted
+ * credits, revoked/invalid API key, 401/402/403. Before this bucket existed
+ * they all fell through to 'unknown', so a run whose every judge call died on
+ * `insufficient credits` reported a bare count with no diagnosable class.
+ */
+export type JudgeErrorKind =
+  | 'parse_fail'
+  | 'refusal'
+  | 'timeout'
+  | 'http_5xx'
+  | 'auth_or_quota'
+  | 'unknown';
 
 export interface JudgeErrorRow {
   kind: JudgeErrorKind;
@@ -105,6 +118,8 @@ export interface JudgeErrorsCounts {
   refusal: number;
   timeout: number;
   http_5xx: number;
+  /** Account/auth failures (quota exhausted, bad/revoked key, 401/402/403). */
+  auth_or_quota: number;
   unknown: number;
   total: number;
   /** Surfaced verbatim in output so users know errors are counted, not silent. */
@@ -276,6 +291,18 @@ export interface ProbeReport {
   verdict_breakdown: VerdictBreakdown;
   calibration: Calibration;
   judge_errors: JudgeErrorsCounts;
+  /**
+   * 2026-09-16: per-pair judge error detail (kind + pair_id + reason text).
+   *
+   * `judge_errors` alone is a set of counts — it answers "how many" but not
+   * "why". When every judge call failed, the run showed a number with no
+   * diagnosable cause, so the real reason had to be recovered by hand from a
+   * side channel. The runner already collected these rows; they are now part
+   * of the persisted report. Append-only + optional: reports persisted before
+   * this field lack it, and consumers must treat absent as "no detail
+   * recorded" rather than "no errors".
+   */
+  judge_error_rows?: JudgeErrorRow[];
   cost_usd: CostBreakdown;
   cache: CacheStats;
   duration_ms: number;

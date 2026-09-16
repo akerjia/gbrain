@@ -474,6 +474,12 @@ async function _runContradictionProbeInner(opts: RunnerOpts): Promise<RunnerResu
     verdict_breakdown: verdictBreakdown,
     calibration,
     judge_errors: judgeErrors,
+    // 2026-09-16: persist the per-pair reasons alongside the counts. The rows
+    // were already collected (errs.rowsOut()) and returned as a side channel,
+    // but never reached the report — so a run that failed 100% of its judge
+    // calls persisted only "N errors" with no way to tell why. Counts answer
+    // "how many"; this answers "what happened".
+    judge_error_rows: [...errs.rowsOut()],
     cost_usd: cost,
     cache: cacheStats,
     duration_ms: durationMs,

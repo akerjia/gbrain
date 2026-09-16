@@ -44,7 +44,7 @@ function mkReport(over: Partial<ProbeReport> = {}): ProbeReport {
       queries_with_contradiction: 0,
       wilson_ci_95: { point: 0, lower: 0, upper: 0.56 },
     },
-    judge_errors: { parse_fail: 0, refusal: 0, timeout: 0, http_5xx: 0, unknown: 0, total: 0, note: 'errors are counted' },
+    judge_errors: { parse_fail: 0, refusal: 0, timeout: 0, http_5xx: 0, auth_or_quota: 0, unknown: 0, total: 0, note: 'errors are counted' },
     cost_usd: { judge: 0, embedding: 0, total: 0, estimate_note: 'soft ceiling' },
     cache: { hits: 0, misses: 0, hit_rate: 0 },
     duration_ms: 12,
@@ -140,7 +140,7 @@ describe('doctor zero-total check body (#3889)', () => {
 describe('CLI summary builder (#3889)', () => {
   test('judge errors line prints all five buckets (unknown included) so they sum to total', () => {
     const r = mkReport({
-      judge_errors: { parse_fail: 1, refusal: 0, timeout: 1, http_5xx: 0, unknown: 2, total: 4, note: 'counted' },
+      judge_errors: { parse_fail: 1, refusal: 0, timeout: 1, http_5xx: 0, auth_or_quota: 0, unknown: 2, total: 4, note: 'counted' },
       verdict_breakdown: {
         no_contradiction: 3, contradiction: 0, temporal_supersession: 0,
         temporal_regression: 0, temporal_evolution: 0, negation_artifact: 0,
@@ -159,7 +159,7 @@ describe('CLI summary builder (#3889)', () => {
   test('judge_failed run: banner shown, 0/N headline and Wilson CI suppressed', () => {
     const r = mkReport({
       run_status: 'judge_failed',
-      judge_errors: { parse_fail: 0, refusal: 0, timeout: 0, http_5xx: 6, unknown: 0, total: 6, note: 'counted' },
+      judge_errors: { parse_fail: 0, refusal: 0, timeout: 0, http_5xx: 6, auth_or_quota: 0, unknown: 0, total: 6, note: 'counted' },
     });
     const lines = buildRunSummaryLines(r, false);
     const text = lines.join('\n');
