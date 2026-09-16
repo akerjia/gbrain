@@ -6,7 +6,7 @@
  *   - Slug-only branch: meetings/, personal/, daily/ rescue mistyped pages.
  *   - Both branches: typed AND slug-prefixed → still ok.
  *   - Neither: rejected with kind:<type> reason.
- *   - Negative paths: null parsed, wiki/agents/, dream_generated, too_short.
+ *   - Negative paths: null parsed, empty slug, wiki/agents/, dream_generated, too_short.
  *
  * Pure-function tests; no DB.
  */
@@ -78,6 +78,26 @@ describe('isFactsBackstopEligible — guards', () => {
   test('subagent namespace (wiki/agents/...) is rejected even with eligible type', () => {
     const f = fixture({ slug: 'wiki/agents/sonnet-1/scratch', type: 'meeting' });
     expect(isFactsBackstopEligible(f.slug, f.parsed)).toEqual({ ok: false, reason: 'subagent_namespace' });
+  });
+
+  // P015 (ICN, 2026-09-16): 空/纯空白 slug 必须在提交侧拦下。回归证据：2026-09-15
+  // dead 队列里有一条 facts-absorb 作业（id 64748, source=sync:import），载荷 slug=""，
+  // 执行侧抛 'facts-absorb job requires data.slug' 耗尽 attempts 后 dead。
+  test('empty slug → no_slug (would otherwise submit a doomed facts-absorb job)', () => {
+    const f = fixture({ slug: '', type: 'meeting' });
+    expect(isFactsBackstopEligible(f.slug, f.parsed)).toEqual({ ok: false, reason: 'no_slug' });
+  });
+
+  test('whitespace-only slug → no_slug', () => {
+    const f = fixture({ slug: '   ', type: 'meeting' });
+    expect(isFactsBackstopEligible(f.slug, f.parsed)).toEqual({ ok: false, reason: 'no_slug' });
+  });
+
+  test('empty slug is rejected even when the slug-prefix rescue branch would apply', () => {
+    // '' does not start with meetings/ etc., but pin the precedence anyway:
+    // the no_slug guard must win over the later kind:/too_short checks.
+    expect(isFactsBackstopEligible('', { type: 'note', compiled_truth: 'short', frontmatter: {} }))
+      .toEqual({ ok: false, reason: 'no_slug' });
   });
 
   test('dream_generated:true frontmatter is rejected (anti-loop)', () => {
