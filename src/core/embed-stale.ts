@@ -431,18 +431,26 @@ export async function embedStaleForSource(
           token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
         }));
         await observed(pacer, () => engine.upsertChunks(slug, merged, { sourceId: keySourceId }));
-        // v0.41.31: stamp provenance only when EVERY chunk was stale (fully
-        // re-embedded this pass) — a partially-stale page keeps preserved
+        // v0.41.31: stamp provenance only when EVERY chunk of the page is
+        // embedded as of this write — a partially-stale page keeps preserved
         // chunks of unknown provenance, so don't claim current. After the
         // invalidate pass above, signature-drifted pages ARE fully stale.
-        if (signature && stale.length === existing.length) {
+        // CBQ44: `stale.length === existing.length` only holds when the DB
+        // page-fetch batch contained every chunk of the page; with a small
+        // batch size (>1-chunk pages split across batches) it was never true,
+        // so the page was never stamped and got re-invalidated every run.
+        const fullyEmbedded = existing.every((c) => {
+          const e = staleIdxToEmbedding.get(c.chunk_index);
+          return e !== undefined || c.embedding_is_null === false;
+        });
+        if (signature && fullyEmbedded) {
           await observed(pacer, () =>
             engine.setPageEmbeddingSignature(slug, { sourceId: keySourceId, signature }),
           );
         }
         // #3507: a FULLY re-embedded per_chunk_synopsis page landed at the
         // title tier — keep the stamped mode honest (mixed pages stay as-is).
-        if (stale.length === existing.length) {
+        if (fullyEmbedded) {
           await observed(pacer, () =>
             restampIfDemotedToTitleTier(engine, pageRow, slug, keySourceId),
           );

@@ -143,6 +143,24 @@ export async function invalidateStaleSignatureEmbeddingsGuarded(
   const sigClause = opts.includeNullSignature
     ? `(p.embedding_signature IS NULL OR p.embedding_signature <> $1)`
     : `p.embedding_signature IS NOT NULL AND p.embedding_signature <> $1`;
+  // CBQ44 (net-negative backfill loop): `pages.embedding_signature` is a
+  // page-level provenance STAMP, not the vector's own provenance. A page that
+  // was fully re-embedded but never stamped (the --batch-size stamping gate in
+  // embed.ts splits pages across batches) keeps a NULL signature while its
+  // chunks are already current-model. The signature-only predicate above then
+  // NULLs those valid vectors on EVERY run — destroy-then-rebuild forever, and
+  // the rebuild budget is spent re-embedding them instead of the real backlog.
+  // The chunk `model` column is the ground truth (#4305). Only invalidate when
+  // a chunk's own model names another provider/model; NULL model (pre-#3461)
+  // is grandfathered, matching falseStampPageWhere's stance.
+  const lastColon = opts.signature.lastIndexOf(':');
+  const toModel = lastColon > 0 ? opts.signature.slice(0, lastColon) : opts.signature;
+  const bareModel = toModel.includes(':') ? toModel.slice(toModel.indexOf(':') + 1) : toModel;
+  params.push(toModel, bareModel);
+  const modelClause =
+    `AND cc.model IS NOT NULL
+        AND cc.model <> $${params.length - 1}
+        AND cc.model <> $${params.length}`;
   const rows = await engine.executeRaw<{ page_id: number }>(
     `UPDATE content_chunks cc
         SET ${colId} = NULL, embedded_at = NULL
@@ -151,6 +169,7 @@ export async function invalidateStaleSignatureEmbeddingsGuarded(
         AND cc.${colId} IS NOT NULL
         AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
         AND ${sigClause}${srcClause}
+        AND ${modelClause}
       RETURNING cc.page_id`,
     params,
   );

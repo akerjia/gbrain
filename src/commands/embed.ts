@@ -1973,12 +1973,25 @@ async function embedAllStale(
           }));
           await observed(pacer, () => engine.upsertChunks(slug, merged, { sourceId: keySourceId }));
           // v0.41.31: stamp provenance after the page's chunks are embedded —
-          // but only when EVERY chunk was stale (fully re-embedded this pass).
+          // but only when EVERY chunk is embedded as of this write.
           // A partially-stale page keeps preserved chunks of unknown/old
           // provenance, so don't claim it's current. (After invalidate, a
           // signature-drifted page IS fully stale → this stamps it.)
           // #3037: not on partial failure — failed chunks stay NULL.
-          if (signature && failed === 0 && stale.length === existing.length) {
+          //
+          // CBQ44: the old test was `stale.length === existing.length`, which
+          // only holds when the DB page-fetch batch happened to contain every
+          // chunk of the page. PAGE_SIZE = --batch-size (default 8 in the
+          // catch-up job), so any page with more than 8 chunks was loaded in
+          // pieces and could NEVER be stamped → next run re-invalidated it →
+          // net-negative backfill loop. Decide from the page's ACTUAL post-write
+          // state: every chunk either just got an embedding here, or already
+          // had one (preserved, therefore current-model — signature drift
+          // would have NULLed it upstream).
+          const fullyEmbedded = existing.every(c =>
+            staleIdxToEmbedding.has(c.chunk_index) || c.embedding_is_null === false,
+          );
+          if (signature && failed === 0 && fullyEmbedded) {
             await observed(pacer, () =>
               engine.setPageEmbeddingSignature(slug, { sourceId: keySourceId, signature }),
             );
