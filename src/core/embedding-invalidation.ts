@@ -169,7 +169,7 @@ export async function invalidateStaleSignatureEmbeddingsGuarded(
         AND cc.${colId} IS NOT NULL
         AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')
         AND ${sigClause}${srcClause}
-        AND ${modelClause}
+        ${modelClause}
       RETURNING cc.page_id`,
     params,
   );
