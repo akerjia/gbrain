@@ -34,6 +34,11 @@ export interface GBrainConfig {
    * `gbrain config set` routes these two dotted keys here, not to the DB. */
   push?: { allow_unverified_remote?: boolean };
   hooks?: { stop_push_debounce_min?: number | string };
+  /** P013 (ICN): dynamic key sources — map of ENV_VAR to a shell command whose
+   * trimmed stdout becomes that variable's value at every provider-env fold,
+   * overriding both the file plane and process.env. Lets a long-lived process
+   * (serve/autopilot) pick up a rotated key without a restart. */
+  dynamic_key_commands?: Record<string, string>;
   /** Ambient-writeback MIRROR of the DB-plane `memory.*` keys — `gbrain
    * config set memory.*` dual-writes both planes so the engine-free Stop-hook
    * child and the stdio boot resolve see the same truth the serve does. The
@@ -1237,6 +1242,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'database_url',
   'database_path',
   'openai_api_key',
+  'dynamic_key_commands',
   'anthropic_api_key',
   'zeroentropy_api_key',
   'openrouter_api_key',

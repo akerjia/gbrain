@@ -131,6 +131,16 @@ const DEFAULT_CHAT_MODEL = 'anthropic:claude-sonnet-4-6';
 let _config: AIGatewayConfig | null = null;
 const _modelCache = new Map<string, any>();
 
+// P013 (ICN): throttled re-fold of the provider env on the hot path.
+const ENV_REFRESH_TTL_MS = (() => {
+  const raw = process.env.GBRAIN_ENV_REFRESH_TTL_MS;
+  // 注意：Number('') === 0（不是 NaN）——直接 Number() 会让"没设变量"变成"关闭刷新"。
+  if (raw === undefined || raw === '') return 60_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 60_000;
+})();
+let _lastEnvRefreshAt = 0;
+
 /**
  * Materialize `applyResolveAuth`'s SDK-shaped result ({apiKey}|{headers}) into
  * raw HTTP headers: a Bearer-style apiKey becomes an Authorization header;
@@ -819,6 +829,7 @@ export function __setChatTransportForTests(
  *  `models doctor` base-URL probe (which reads the same merged config the
  *  gateway calls with, inside its own fail-open guard). */
 export function requireConfig(): AIGatewayConfig {
+  maybeRefreshGatewayEnv();
   if (!_config) {
     throw new AIConfigError(
       'AI gateway is not configured. Call configureGateway() during engine connect.',
@@ -826,6 +837,23 @@ export function requireConfig(): AIGatewayConfig {
     );
   }
   return _config;
+}
+
+/** P013 (ICN): re-fold the provider env (file plane + dynamic key commands)
+ *  at most once per TTL, so a long-lived serve/autopilot process picks up a
+ *  rotated key without a restart. Never throws — a refresh must not break a
+ *  live LLM call. Set GBRAIN_ENV_REFRESH_TTL_MS=0 to disable. */
+function maybeRefreshGatewayEnv(): void {
+  if (!_config) return;
+  if (ENV_REFRESH_TTL_MS <= 0) return;
+  const now = Date.now();
+  if (now - _lastEnvRefreshAt < ENV_REFRESH_TTL_MS) return;
+  _lastEnvRefreshAt = now;
+  try {
+    refreshGatewayEnvFromFilePlane();
+  } catch {
+    /* best-effort */
+  }
 }
 
 /** Public config accessors (for schema setup, doctor, etc.). */

@@ -27,6 +27,7 @@
  */
 
 import type { GBrainConfig } from '../config.ts';
+import { execSync } from 'node:child_process';
 
 export function mergedProviderEnv(
   cfg: GBrainConfig | null,
@@ -60,6 +61,40 @@ export function mergedProviderEnv(
   const merged = { ...fromConfig, ...envReal };
   if (!envReal.GOOGLE_GENERATIVE_AI_API_KEY && envReal.GEMINI_API_KEY) {
     merged.GOOGLE_GENERATIVE_AI_API_KEY = envReal.GEMINI_API_KEY;
+  }
+  // P013 (ICN): dynamic key sources — highest precedence, because a rotated
+  // key must beat both the file plane and the process-start env, otherwise a
+  // long-lived process keeps serving a dead key until somebody restarts it.
+  // A failing command keeps the previous value; this fold never throws.
+  const dyn = (cfg as { dynamic_key_commands?: Record<string, unknown> } | null)
+    ?.dynamic_key_commands;
+  if (dyn && typeof dyn === 'object') {
+    for (const [name, cmd] of Object.entries(dyn)) {
+      if (!/^[A-Z][A-Z0-9_]*$/.test(name)) continue;
+      if (typeof cmd !== 'string' || !cmd.trim()) continue;
+      try {
+        const out = execSync(cmd, {
+          timeout: 10_000,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+        if (!out) continue;
+        if (merged[name] !== out) {
+          // P018: 只在值真的变化时出声（绝不打印值本身）。落到 journald 一行，
+          // 这是「轮换后长驻进程是否真的换了 key」的可观测证据。
+          try {
+            console.error(
+              `[gbrain] dynamic key ${merged[name] ? 'rotated' : 'set'}: ${name} (pid ${process.pid})`,
+            );
+          } catch {
+            /* logging must never break the fold */
+          }
+        }
+        merged[name] = out;
+      } catch {
+        /* keep the previously folded value */
+      }
+    }
   }
   return merged;
 }
