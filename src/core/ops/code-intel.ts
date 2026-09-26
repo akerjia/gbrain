@@ -127,18 +127,35 @@ const code_def: Operation = {
     symbol: { type: 'string', required: true, description: 'Symbol name (bare token; e.g., parseMarkdown, BrainEngine).' },
     limit: { type: 'number', description: 'Max definition sites returned. Default 20.' },
     lang: { type: 'string', description: "Filter by content_chunks.language (e.g. 'typescript', 'python')." },
+    // ICN P019 (2026-09-26): the module header promises all four wrappers carry
+    // source_id/all_sources; code_def had lost them, so an MCP caller on a
+    // multi-source brain could only ever search brain-wide — a same-named
+    // symbol in ANOTHER source (e.g. gbrain's own TS tree) came back as if it
+    // were the caller's. CLI code-def has been source-scoped all along
+    // (resolveCliCodeScope); this restores parity on the MCP surface.
+    source_id: { type: 'string', description: "Scope to a single source (e.g. 'icn-scripts'). Defaults to ctx.sourceId; '__all__' spans every source for trusted local callers, your granted sources for remote callers." },
+    all_sources: { type: 'boolean', description: 'Span sources (equivalent to source_id=__all__): every source locally, your grant remotely.' },
   },
   scope: 'read',
   handler: async (ctx, p) => {
     const { findCodeDef } = await import('../../commands/code-def.ts');
-    const policy = await readPolicyOpts(ctx, ctx.remote === false ? {} : undefined);
+    // ICN P019: the module header promises all four wrappers carry
+    // source_id/all_sources — resolve them through the same trust+grant path as
+    // code_callers/code_callees, then layer upstream's unified read policy
+    // (excludePrivate / requireSafeChunks) on top of the resolved scope.
+    const scope = await routeCodeIntelScope(
+      ctx, typeof p.source_id === 'string' ? p.source_id : undefined, p.all_sources === true, 'code_def',
+    );
+    const policy = {
+      ...(await readPolicyOpts(ctx, scope.allSources ? {} : { sourceId: scope.sourceId })),
+      ...(scope.allSources ? { allSources: true } : {}),
+    };
     const defs = await findCodeDef(ctx.engine, p.symbol as string, {
       ...policy,
       limit: (p.limit as number) ?? 20,
       language: (p.lang as string) || undefined,
     });
-    // code_def is source-scoped through readPolicyOpts (trust+grant); readiness
-    // is 'symbol' grain and carries the same policy.
+    // Readiness is 'symbol' grain and carries the same resolved scope + policy.
     const { resolveCodeReadiness, readinessHint } = await import('../code-graph-readiness.ts');
     const readiness = await resolveCodeReadiness(ctx.engine, { ...policy, remote: ctx.remote, kind: 'symbol', count: defs.length });
     // ICN P013 (2026-09-12): mirror the CLI's supplementary signal — a count:0 whose
@@ -160,6 +177,7 @@ const code_def: Operation = {
     return {
       symbol: p.symbol as string, count: defs.length, status: readiness.status, ready: readiness.ready,
       hint: readinessHint(readiness),
+      ...(readiness.scoped_source_id ? { scoped_source_id: readiness.scoped_source_id } : {}),
       ...(textual ? { textual_hits: textual.hits, textual_hit_languages: textual.languages } : {}),
       defs,
     };
@@ -177,11 +195,22 @@ const code_refs: Operation = {
     symbol: { type: 'string', required: true, description: 'Symbol to find references to.' },
     limit: { type: 'number', description: 'Max references returned. Default 50.' },
     lang: { type: 'string', description: "Filter by content_chunks.language." },
+    // ICN P019 (2026-09-26): see code_def — refs lost the same two params.
+    source_id: { type: 'string', description: "Scope to a single source (e.g. 'icn-scripts'). Defaults to ctx.sourceId; '__all__' spans every source for trusted local callers, your granted sources for remote callers." },
+    all_sources: { type: 'boolean', description: 'Span sources (equivalent to source_id=__all__): every source locally, your grant remotely.' },
   },
   scope: 'read',
   handler: async (ctx, p) => {
     const { findCodeRefs } = await import('../../commands/code-refs.ts');
-    const policy = await readPolicyOpts(ctx, ctx.remote === false ? {} : undefined);
+    // ICN P019: same resolution as code_def — explicit params through the
+    // trust+grant path, upstream's read policy layered on top.
+    const scope = await routeCodeIntelScope(
+      ctx, typeof p.source_id === 'string' ? p.source_id : undefined, p.all_sources === true, 'code_refs',
+    );
+    const policy = {
+      ...(await readPolicyOpts(ctx, scope.allSources ? {} : { sourceId: scope.sourceId })),
+      ...(scope.allSources ? { allSources: true } : {}),
+    };
     const refs = await findCodeRefs(ctx.engine, p.symbol as string, {
       ...policy,
       limit: (p.limit as number) ?? 50,
@@ -189,7 +218,12 @@ const code_refs: Operation = {
     });
     const { resolveCodeReadiness, readinessHint } = await import('../code-graph-readiness.ts');
     const readiness = await resolveCodeReadiness(ctx.engine, { ...policy, remote: ctx.remote, kind: 'symbol', count: refs.length });
-    return { symbol: p.symbol as string, count: refs.length, status: readiness.status, ready: readiness.ready, hint: readinessHint(readiness), refs };
+    return {
+      symbol: p.symbol as string, count: refs.length, status: readiness.status, ready: readiness.ready,
+      hint: readinessHint(readiness),
+      ...(readiness.scoped_source_id ? { scoped_source_id: readiness.scoped_source_id } : {}),
+      refs,
+    };
   },
   cliHints: { name: 'code_refs', hidden: true },
 };
