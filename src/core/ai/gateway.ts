@@ -66,7 +66,7 @@ import { getProviderCapabilities } from './capabilities.ts';
 import { runGuardrails, hasGuardrails, type GuardrailHook } from '../guardrails.ts';
 import { loadConfig } from '../config.ts';
 import type { GBrainConfig } from '../config.ts';
-import { mergedProviderEnv } from './provider-env.ts';
+import { mergedProviderEnv, resolveEnvRefreshTtlMs } from './provider-env.ts';
 import { redactProviderKeys } from './key-redact.ts';
 import { reportEmbeddingAuthFailure } from './key-warnings.ts';
 import { buildGatewayConfig, foldNativeBaseUrlsFromFilePlane } from './build-gateway-config.ts';
@@ -134,14 +134,11 @@ let _config: AIGatewayConfig | null = null;
 const redactKeys = (text: string): string => redactProviderKeys(text, _config?.env ?? {});
 const _modelCache = new Map<string, any>();
 
-// P013 (ICN): throttled re-fold of the provider env on the hot path.
-const ENV_REFRESH_TTL_MS = (() => {
-  const raw = process.env.GBRAIN_ENV_REFRESH_TTL_MS;
-  // 注意：Number('') === 0（不是 NaN）——直接 Number() 会让"没设变量"变成"关闭刷新"。
-  if (raw === undefined || raw === '') return 60_000;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : 60_000;
-})();
+// P013/P018b (ICN): throttled re-fold of the provider env on the hot path.
+// The TTL knob itself lives in provider-env.ts (resolveEnvRefreshTtlMs) — one
+// source of truth, shared with the dynamic-key command cache so the two can
+// never drift apart.
+const ENV_REFRESH_TTL_MS = resolveEnvRefreshTtlMs();
 let _lastEnvRefreshAt = 0;
 
 /**

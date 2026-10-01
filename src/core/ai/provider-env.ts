@@ -63,6 +63,32 @@ function suppliedBy(env: Record<string, string | undefined>, name: string): stri
   return name === 'GOOGLE_GENERATIVE_AI_API_KEY' && !realEnv(env, name) && realEnv(env, 'GEMINI_API_KEY') ? 'GEMINI_API_KEY' : name;
 }
 
+/** P018b (ICN): the re-fold TTL knob, resolved in one place — gateway.ts's
+ *  `maybeRefreshGatewayEnv()` imports this instead of re-parsing the env var,
+ *  so the refresh throttle and the dynamic-key command cache can never drift
+ *  apart. Default 60s. Note `Number('') === 0` (not NaN): a bare `Number()`
+ *  would turn "variable unset" into "refresh disabled". 0 = disabled. */
+export function resolveEnvRefreshTtlMs(): number {
+  const raw = process.env.GBRAIN_ENV_REFRESH_TTL_MS;
+  if (raw === undefined || raw === '') return 60_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 60_000;
+}
+
+/** P018b (ICN): memoised dynamic-key commands.
+ *
+ *  The fold below runs on EVERY mergedProviderEnv() call — i.e. on every
+ *  gateway-config build, hence on every LLM call. Executing the command
+ *  unconditionally therefore makes the key source's own latency dominate the
+ *  request: measured 2026-10-02, `gbrain query` went 2.1s (key from env) →
+ *  14.1s (key from the BSM command), with 3-4 command runs per single query —
+ *  the P018 throttle guarded `requireConfig()` but never the command itself.
+ *
+ *  Cache per (name, command) for the same TTL the design already promises for
+ *  key rotation: a long-lived serve/autopilot process runs the command at most
+ *  once per TTL; a fresh CLI process starts cold and pays one run. */
+const _dynKeyCache = new Map<string, { value: string; at: number }>();
+
 export function mergedProviderEnv(
   cfg: GBrainConfig | null,
   env: Record<string, string | undefined> = process.env,
@@ -90,9 +116,19 @@ export function mergedProviderEnv(
   const dyn = (cfg as { dynamic_key_commands?: Record<string, unknown> } | null)
     ?.dynamic_key_commands;
   if (dyn && typeof dyn === 'object') {
+    const ttlMs = resolveEnvRefreshTtlMs();
+    const now = Date.now();
     for (const [name, cmd] of Object.entries(dyn)) {
       if (!/^[A-Z][A-Z0-9_]*$/.test(name)) continue;
       if (typeof cmd !== 'string' || !cmd.trim()) continue;
+      // P018b: this is the hot path — serve from the TTL cache when warm
+      // instead of paying the key source's round-trip on every LLM call.
+      const cacheKey = `${name}\u0000${cmd}`;
+      const cached = _dynKeyCache.get(cacheKey);
+      if (ttlMs > 0 && cached && now - cached.at < ttlMs) {
+        merged[name] = cached.value;
+        continue;
+      }
       try {
         const out = execSync(cmd, {
           timeout: 10_000,
@@ -112,8 +148,11 @@ export function mergedProviderEnv(
           }
         }
         merged[name] = out;
+        _dynKeyCache.set(cacheKey, { value: out, at: Date.now() });
       } catch {
-        /* keep the previously folded value */
+        /* command failed: keep the last good value when we have one,
+           otherwise whatever the file/env plane provided */
+        if (cached) merged[name] = cached.value;
       }
     }
   }
